@@ -112,6 +112,5 @@ Then manually remove any `includeIf` entries from `~/.gitconfig` that reference 
 - **bash** 4.0+ — the script itself
 - **git** 2.13+ — for `includeIf` support and config manipulation
 - **openssh** — for `ssh-keygen` to generate SSH keys
-- **sed** — for editing `~/.gitconfig` (standard on all Linux/macOS)
 
-No Python, no jq, no extra packages needed.
+No Python, no jq, no sed, no extra packages needed. Works on any Linux (including Alpine) and macOS.

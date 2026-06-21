@@ -20,14 +20,13 @@ If you work with multiple GitHub accounts (work, personal, open-source), you nee
 - Folder-based automatic identity switching via `includeIf`
 - Per-repo manual identity application
 - Show which profile applies to the current directory
-- No runtime dependencies beyond `bash`, `git`, `ssh-keygen`, and `sed`
+- No runtime dependencies beyond `bash`, `git`, and `ssh-keygen`
 
 ## Requirements
 
 - Bash 4.0+
 - Git 2.13+ (for `includeIf` support)
 - OpenSSH (for `ssh-keygen`)
-- sed (standard on all Linux/macOS systems)
 
 ## Installation
 
