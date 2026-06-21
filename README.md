@@ -74,10 +74,17 @@ rm -rf ~/.config/git-persona
 
 ## Usage
 
+Since the script is named `git-persona`, Git automatically recognizes it as a subcommand. Both forms work identically:
+
+```bash
+git persona create work "Name" work@example.com ~/dev/work   # recommended
+git-persona create work "Name" work@example.com ~/dev/work   # also works
+```
+
 ### Create a profile
 
 ```bash
-git-persona create work "Work Name" work@example.com ~/dev/work
+git persona create work "Work Name" work@example.com ~/dev/work
 ```
 
 This will:
@@ -91,20 +98,20 @@ Add the printed public key to your GitHub account under **Settings > SSH and GPG
 ### List profiles
 
 ```bash
-git-persona list
+git persona list
 ```
 
 ### Apply a profile to the current repo
 
 ```bash
 cd ~/some-repo
-git-persona use work
+git persona use work
 ```
 
 ### Apply a profile to a folder
 
 ```bash
-git-persona use-folder work ~/projects/client-a
+git persona use-folder work ~/projects/client-a
 ```
 
 Any git repo under `~/projects/client-a/` will automatically use the `work` profile.
@@ -112,13 +119,13 @@ Any git repo under `~/projects/client-a/` will automatically use the `work` prof
 ### Show the current profile
 
 ```bash
-git-persona current
+git persona current
 ```
 
 ### Delete a profile
 
 ```bash
-git-persona delete work
+git persona delete work
 ```
 
 This removes the SSH key, profile config, and `includeIf` entries. The base directory is not removed.
@@ -126,7 +133,7 @@ This removes the SSH key, profile config, and `includeIf` entries. The base dire
 ### Show version
 
 ```bash
-git-persona version
+git persona version
 ```
 
 ## How it works
@@ -181,6 +188,20 @@ So any repo under `~/dev/work/` automatically uses the work identity and SSH key
 - [Usage Guide](docs/usage.md)
 - [Configuration](docs/configuration.md)
 - [Contributing](docs/contributing.md)
+
+## Testing
+
+```bash
+make test
+```
+
+Or directly:
+
+```bash
+bash tests/test_basic.sh
+```
+
+The test suite runs in an isolated temp directory and won't touch your real profiles or SSH keys.
 
 ## License
 

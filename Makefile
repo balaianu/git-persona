@@ -28,12 +28,8 @@ $(BINDIR):
 	@mkdir -p $(BINDIR)
 
 test:
-	@echo "Running syntax check..."
-	@bash -n $(SCRIPT) && echo "Syntax OK"
-	@echo "Running version check..."
-	@bash $(SCRIPT) version
-	@echo "Running help check..."
-	@bash $(SCRIPT) help
+	@echo "Running test suite..."
+	@bash tests/test_basic.sh
 
 clean:
 	@echo "Nothing to clean."

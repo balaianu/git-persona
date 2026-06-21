@@ -7,7 +7,7 @@
 Create a new profile with an SSH key and `includeIf` rule.
 
 ```bash
-git-persona create <id> <name> <email> [base_dir]
+git persona create <id> <name> <email> [base_dir]
 ```
 
 - `<id>`: Short identifier for the profile (e.g., `work`, `personal`)
@@ -18,7 +18,7 @@ git-persona create <id> <name> <email> [base_dir]
 Example:
 
 ```bash
-git-persona create work "Andrei Balaianu" andrei@example.com ~/dev/work
+git persona create work "Andrei Balaianu" andrei@example.com ~/dev/work
 ```
 
 Output:
@@ -40,7 +40,7 @@ Put repos under /home/andy/dev/work to automatically use this profile.
 Show all configured profiles.
 
 ```bash
-git-persona list
+git persona list
 ```
 
 ### `delete`
@@ -48,7 +48,7 @@ git-persona list
 Delete a profile, its SSH key, its config file, and remove `includeIf` entries.
 
 ```bash
-git-persona delete <id>
+git persona delete <id>
 ```
 
 The base directory is not removed.
@@ -59,7 +59,7 @@ Apply a profile to the current git repository.
 
 ```bash
 cd ~/some-repo
-git-persona use <id>
+git persona use <id>
 ```
 
 This sets `user.name`, `user.email`, and `core.sshCommand` in the repo's local config.
@@ -69,7 +69,7 @@ This sets `user.name`, `user.email`, and `core.sshCommand` in the repo's local c
 Apply a profile to a folder via `includeIf`.
 
 ```bash
-git-persona use-folder <id> <folder>
+git persona use-folder <id> <folder>
 ```
 
 Any git repo under the specified folder will automatically use this profile.
@@ -77,7 +77,7 @@ Any git repo under the specified folder will automatically use this profile.
 Example:
 
 ```bash
-git-persona use-folder work ~/projects/client-a
+git persona use-folder work ~/projects/client-a
 ```
 
 ### `current`
@@ -85,7 +85,7 @@ git-persona use-folder work ~/projects/client-a
 Show which profile applies to the current directory.
 
 ```bash
-git-persona current
+git persona current
 ```
 
 If inside a git repo, it reads the effective git config and matches it to a profile. If not in a git repo, it checks if the current directory is under any profile's base directory.
@@ -95,7 +95,7 @@ If inside a git repo, it reads the effective git config and matches it to a prof
 Show the installed version.
 
 ```bash
-git-persona version
+git persona version
 ```
 
 ### `help`
@@ -103,7 +103,7 @@ git-persona version
 Show usage information.
 
 ```bash
-git-persona help
+git persona help
 ```
 
 ## Typical workflow
@@ -111,8 +111,8 @@ git-persona help
 1. Create profiles for each identity:
 
 ```bash
-git-persona create work "Work Name" work@example.com ~/dev/work
-git-persona create personal "Personal Name" personal@example.com ~/dev/personal
+git persona create work "Work Name" work@example.com ~/dev/work
+git persona create personal "Personal Name" personal@example.com ~/dev/personal
 ```
 
 2. Add the printed SSH public keys to the corresponding GitHub accounts.
@@ -134,7 +134,7 @@ cd ~/dev/work/repo
 git config user.email
 # work@example.com
 
-git-persona current
+git persona current
 # Current profile: work
 ```
 
@@ -142,5 +142,5 @@ git-persona current
 
 ```bash
 cd ~/other-repo
-git-persona use work
+git persona use work
 ```

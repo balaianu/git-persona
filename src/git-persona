@@ -195,7 +195,9 @@ cmd_list() {
         count=$((count + 1))
     done
 
-    [ "$count" -eq 0 ] && echo "No profiles found."
+    if [ "$count" -eq 0 ]; then
+        echo "No profiles found."
+    fi
 }
 
 cmd_delete() {

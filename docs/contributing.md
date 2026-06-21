@@ -13,29 +13,31 @@ The main script is in `src/git-persona`. Edit it directly.
 
 ### Testing
 
-Run the syntax and basic checks:
+Run the full test suite:
 
 ```bash
 make test
 ```
 
-This checks:
-- Bash syntax validity
-- Version output
-- Help output
-
-### Manual testing
-
-Create test profiles in a temporary location:
+Or directly:
 
 ```bash
-git-persona create test-profile "Test" test@example.com /tmp/test-profile-dir
-cd /tmp/test-profile-dir
-mkdir test-repo && cd test-repo && git init
-git-persona current
-git config user.email  # should be test@example.com
-git-persona delete test-profile
+bash tests/test_basic.sh
 ```
+
+The test suite uses an isolated temp directory as `HOME`, so it won't touch your real profiles or SSH keys. It covers:
+
+- Syntax validation
+- Version and help output
+- Profile creation (SSH key, config, includeIf)
+- Profile listing
+- Duplicate profile rejection
+- Current profile detection (in repo, in base dir, outside)
+- Per-repo profile application
+- Per-folder profile application
+- Profile deletion (key, config, includeIf cleanup)
+- Error handling (non-existent profiles, non-repo use)
+- Git extension invocation (`git persona`)
 
 ## Submitting changes
 
