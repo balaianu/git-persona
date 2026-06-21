@@ -2,13 +2,13 @@
 
 # git-persona: manage multiple git identities with SSH keys and includeIf
 # Usage: git-persona <command> [args]
-# Version: 1.2.0
+# Version: 1.3.0
 # License: MIT
 # Dependencies: bash 4.0+, git 2.13+, openssh (ssh-keygen)
 
 set -euo pipefail
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 
 CONFIG_DIR="${HOME}/.config/git-persona"
 PROFILES_DIR="${CONFIG_DIR}/profiles"
@@ -25,21 +25,27 @@ usage() {
 Usage: git-persona <command> [args]
 
 Commands:
-  create <id> <name> <email> [base_dir]  Create a new profile and generate SSH key
-  list                                    List all profiles
-  delete <id>                             Delete a profile and its SSH key
-  use <id>                                Apply profile to current repo
-  use-folder <id> <folder>                Apply profile to a folder via includeIf
-  current                                 Show the profile for the current directory
-  version                                 Show the version of git-persona
+  create <id> <name> <email> [base_dir] [--no-ssh-key]
+                                        Create a new profile (generates SSH key by default)
+  list                                  List all profiles
+  delete <id> [--with-keys]             Delete a profile (keeps SSH key by default)
+  use <id>                              Apply profile to current repo
+  use-folder <id> <folder>              Apply profile to a folder via includeIf
+  current                               Show the profile for the current directory
+  version                               Show the version of git-persona
+
+Flags:
+  --no-ssh-key    (create)  Skip SSH key generation
+  --with-keys     (delete)  Also remove the SSH key pair
 
 Examples:
-  git-persona create work "Work Name" work@example.com ~/work
-  git-persona create personal "Personal Name" personal@example.com ~/personal
-  git-persona use work
-  git-persona use-folder work ~/work
-  git-persona current
-  git-persona version
+  git persona create work "Work Name" work@example.com ~/work
+  git persona create personal "Personal Name" personal@example.com ~/personal --no-ssh-key
+  git persona use work
+  git persona use-folder work ~/work
+  git persona current
+  git persona delete work --with-keys
+  git persona version
 EOF
 }
 
@@ -120,15 +126,29 @@ remove_include_if() {
 }
 
 cmd_create() {
-    if [ $# -lt 3 ]; then
-        echo "Usage: git-persona create <id> <name> <email> [base_dir]"
+    local generate_key=true
+    local positional=()
+
+    for arg in "$@"; do
+        case "$arg" in
+            --no-ssh-key)
+                generate_key=false
+                ;;
+            *)
+                positional+=("$arg")
+                ;;
+        esac
+    done
+
+    if [ "${#positional[@]}" -lt 3 ]; then
+        echo "Usage: git-persona create <id> <name> <email> [base_dir] [--no-ssh-key]"
         exit 1
     fi
 
-    local id="$1"
-    local name="$2"
-    local email="$3"
-    local base_dir="${4:-${HOME}/git-profiles/${id}}"
+    local id="${positional[0]}"
+    local name="${positional[1]}"
+    local email="${positional[2]}"
+    local base_dir="${positional[3]:-${HOME}/git-profiles/${id}}"
     local key_file="${SSH_DIR}/id_ed25519_git_${id}"
     local profile_file="${PROFILES_DIR}/${id}.gitconfig"
     local conf_file="${PROFILES_DIR}/${id}.conf"
@@ -142,19 +162,30 @@ cmd_create() {
 
     mkdir -p "$base_dir"
 
-    if [ ! -f "$key_file" ]; then
-        ssh-keygen -t ed25519 -C "$email" -f "$key_file" -N ""
-    else
-        echo "SSH key already exists at $key_file"
+    if [ "$generate_key" = true ]; then
+        if [ ! -f "$key_file" ]; then
+            ssh-keygen -t ed25519 -C "$email" -f "$key_file" -N ""
+        else
+            echo "SSH key already exists at $key_file"
+        fi
     fi
 
-    cat > "$profile_file" << EOF
+    # Build profile gitconfig — only set sshCommand if key exists
+    if [ -f "$key_file" ]; then
+        cat > "$profile_file" << EOF
 [user]
     name = ${name}
     email = ${email}
 [core]
     sshCommand = ssh -i ${key_file} -o IdentitiesOnly=yes
 EOF
+    else
+        cat > "$profile_file" << EOF
+[user]
+    name = ${name}
+    email = ${email}
+EOF
+    fi
 
     cat > "$conf_file" << EOF
 id="${id}"
@@ -169,12 +200,17 @@ EOF
 
     echo "Profile '$id' created."
     echo "  Base directory: $base_dir"
-    echo "  SSH key:        $key_file"
-    echo "  Public key:     ${key_file}.pub"
-    echo ""
-    echo "Add this public key to GitHub:"
-    cat "${key_file}.pub"
-    echo ""
+    if [ -f "$key_file" ]; then
+        echo "  SSH key:        $key_file"
+        echo "  Public key:     ${key_file}.pub"
+        echo ""
+        echo "Add this public key to GitHub:"
+        cat "${key_file}.pub"
+        echo ""
+    else
+        echo "  SSH key:        (none — use --no-ssh-key was set or key not found)"
+        echo ""
+    fi
     echo "Put repos under $base_dir to automatically use this profile."
 }
 
@@ -201,12 +237,27 @@ cmd_list() {
 }
 
 cmd_delete() {
-    if [ $# -lt 1 ]; then
-        echo "Usage: git-persona delete <id>"
+    local remove_keys=false
+    local id=""
+
+    for arg in "$@"; do
+        case "$arg" in
+            --with-keys)
+                remove_keys=true
+                ;;
+            *)
+                if [ -z "$id" ]; then
+                    id="$arg"
+                fi
+                ;;
+        esac
+    done
+
+    if [ -z "$id" ]; then
+        echo "Usage: git-persona delete <id> [--with-keys]"
         exit 1
     fi
 
-    local id="$1"
     init
 
     if ! profile_exists "$id"; then
@@ -219,7 +270,13 @@ cmd_delete() {
     profile_file=$(get_field "$id" "profile_file")
     base_dir=$(get_field "$id" "base_dir")
 
-    rm -f "$key_file" "${key_file}.pub"
+    if [ "$remove_keys" = true ]; then
+        rm -f "$key_file" "${key_file}.pub"
+        echo "SSH key removed: $key_file"
+    else
+        echo "SSH key kept: $key_file (use --with-keys to also remove it)"
+    fi
+
     rm -f "$profile_file" "${PROFILES_DIR}/${id}.conf"
     remove_include_if "$profile_file"
 
@@ -253,7 +310,9 @@ cmd_use() {
 
     git config user.name "$name"
     git config user.email "$email"
-    git config core.sshCommand "ssh -i ${key_file} -o IdentitiesOnly=yes"
+    if [ -n "$key_file" ] && [ -f "$key_file" ]; then
+        git config core.sshCommand "ssh -i ${key_file} -o IdentitiesOnly=yes"
+    fi
 
     echo "Profile '$id' applied to current repo."
 }

@@ -7,13 +7,16 @@
 Create a new profile with an SSH key and `includeIf` rule.
 
 ```bash
-git persona create <id> <name> <email> [base_dir]
+git persona create <id> <name> <email> [base_dir] [--no-ssh-key]
 ```
 
 - `<id>`: Short identifier for the profile (e.g., `work`, `personal`)
 - `<name>`: Your name for this identity
 - `<email>`: Your email for this identity
 - `[base_dir]`: Optional base directory. Defaults to `~/git-profiles/<id>/`
+- `[--no-ssh-key]`: Skip SSH key generation. Use this if you already have a key or use HTTPS.
+
+By default, an ed25519 SSH key is generated at `~/.ssh/id_ed25519_git_<id>` and the profile config includes `core.sshCommand`. With `--no-ssh-key`, only `user.name` and `user.email` are set.
 
 Example:
 
@@ -35,6 +38,12 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5...
 Put repos under /home/andy/dev/work to automatically use this profile.
 ```
 
+Example without SSH key:
+
+```bash
+git persona create work "Andrei Balaianu" andrei@example.com ~/dev/work --no-ssh-key
+```
+
 ### `list`
 
 Show all configured profiles.
@@ -45,13 +54,28 @@ git persona list
 
 ### `delete`
 
-Delete a profile, its SSH key, its config file, and remove `includeIf` entries.
+Delete a profile, its config file, and remove `includeIf` entries.
 
 ```bash
-git persona delete <id>
+git persona delete <id> [--with-keys]
 ```
 
+- `<id>`: The profile identifier
+- `[--with-keys]`: Also remove the SSH key pair. By default, keys are kept to avoid breaking access to remote repos.
+
 The base directory is not removed.
+
+Example (keeps SSH key):
+
+```bash
+git persona delete work
+```
+
+Example (also removes SSH key):
+
+```bash
+git persona delete work --with-keys
+```
 
 ### `use`
 
@@ -62,7 +86,7 @@ cd ~/some-repo
 git persona use <id>
 ```
 
-This sets `user.name`, `user.email`, and `core.sshCommand` in the repo's local config.
+This sets `user.name` and `user.email` in the repo's local config. If the profile has an SSH key, `core.sshCommand` is also set. For profiles created with `--no-ssh-key`, only name and email are applied.
 
 ### `use-folder`
 

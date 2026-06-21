@@ -29,13 +29,16 @@ The test suite uses an isolated temp directory as `HOME`, so it won't touch your
 
 - Syntax validation
 - Version and help output
-- Profile creation (SSH key, config, includeIf)
+- Profile creation with SSH key (default)
+- Profile creation with `--no-ssh-key` (no key, no sshCommand)
 - Profile listing
 - Duplicate profile rejection
 - Current profile detection (in repo, in base dir, outside)
-- Per-repo profile application
+- Per-repo profile application (with and without key)
 - Per-folder profile application
-- Profile deletion (key, config, includeIf cleanup)
+- Profile deletion (default: keeps keys)
+- Profile deletion with `--with-keys` (removes keys)
+- Flag ordering (flags before and after positional args)
 - Error handling (non-existent profiles, non-repo use)
 - Git extension invocation (`git persona`)
 

@@ -31,7 +31,7 @@ profile_file="/home/andy/.config/git-persona/profiles/work.gitconfig"
 ~/.config/git-persona/profiles/<id>.gitconfig
 ```
 
-Each file contains the Git config for that profile:
+Each file contains the Git config for that profile. With SSH key (default):
 
 ```ini
 [user]
@@ -39,6 +39,14 @@ Each file contains the Git config for that profile:
     email = work@example.com
 [core]
     sshCommand = ssh -i /home/andy/.ssh/id_ed25519_git_work -o IdentitiesOnly=yes
+```
+
+Without SSH key (`--no-ssh-key`):
+
+```ini
+[user]
+    name = Work Name
+    email = work@example.com
 ```
 
 ### SSH keys

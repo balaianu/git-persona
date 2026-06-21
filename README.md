@@ -30,6 +30,14 @@ If you work with multiple GitHub accounts (work, personal, open-source), you nee
 
 ## Installation
 
+### One-liner (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/balaianu/git-persona/main/install.sh | bash
+```
+
+Downloads the script and installs it to `~/.local/bin/git-persona`. No cloning required.
+
 ### From source
 
 ```bash
@@ -95,6 +103,14 @@ This will:
 
 Add the printed public key to your GitHub account under **Settings > SSH and GPG keys**.
 
+To skip SSH key generation (e.g. if you already have a key or use HTTPS):
+
+```bash
+git persona create work "Work Name" work@example.com ~/dev/work --no-ssh-key
+```
+
+The profile will only set `user.name` and `user.email`, without `core.sshCommand`.
+
 ### List profiles
 
 ```bash
@@ -128,7 +144,13 @@ git persona current
 git persona delete work
 ```
 
-This removes the SSH key, profile config, and `includeIf` entries. The base directory is not removed.
+This removes the profile config and `includeIf` entries. By default, the SSH key is **kept** — deleting it could break access to remote repos if the key is in use. The base directory is not removed.
+
+To also remove the SSH key pair:
+
+```bash
+git persona delete work --with-keys
+```
 
 ### Show version
 
