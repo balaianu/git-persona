@@ -228,3 +228,9 @@ The test suite runs in an isolated temp directory and won't touch your real prof
 ## License
 
 MIT
+
+## Support
+
+If you find this tool useful, consider buying me a coffee:
+
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support-yellow)](https://buymeacoffee.com/balaianu)
