@@ -20,14 +20,14 @@ If you work with multiple GitHub accounts (work, personal, open-source), you nee
 - Folder-based automatic identity switching via `includeIf`
 - Per-repo manual identity application
 - Show which profile applies to the current directory
-- No runtime dependencies beyond `bash`, `git`, `ssh-keygen`, and `python3`
+- No runtime dependencies beyond `bash`, `git`, `ssh-keygen`, and `sed`
 
 ## Requirements
 
 - Bash 4.0+
 - Git 2.13+ (for `includeIf` support)
 - OpenSSH (for `ssh-keygen`)
-- Python 3.6+ (for JSON parsing)
+- sed (standard on all Linux/macOS systems)
 
 ## Installation
 
@@ -138,10 +138,11 @@ When you create a profile, it generates:
 
 ```
 ~/.config/git-persona/
-  profiles.json              # profile database
   profiles/
-    work.gitconfig           # profile-specific git config
-    personal.gitconfig       # profile-specific git config
+    work.conf               # profile metadata (key=value)
+    work.gitconfig          # profile-specific git config
+    personal.conf           # profile metadata (key=value)
+    personal.gitconfig      # profile-specific git config
 ```
 
 And adds to `~/.gitconfig`:
@@ -171,7 +172,7 @@ So any repo under `~/dev/work/` automatically uses the work identity and SSH key
 | Path | Purpose |
 |---|---|
 | `~/.local/bin/git-persona` | The script |
-| `~/.config/git-persona/profiles.json` | Profile database |
+| `~/.config/git-persona/profiles/<id>.conf` | Per-profile metadata (key=value) |
 | `~/.config/git-persona/profiles/<id>.gitconfig` | Per-profile Git config |
 | `~/.ssh/id_ed25519_git_<id>` | Per-profile SSH key |
 | `~/.gitconfig` | Modified with `includeIf` entries |

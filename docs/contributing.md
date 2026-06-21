@@ -49,7 +49,8 @@ git-persona delete test-profile
 ## Code style
 
 - Use `bash` with `set -euo pipefail`
-- Use `python3` for JSON manipulation (avoid `jq` dependency)
+- Use `sed` for text manipulation (avoid Python/jq dependencies)
+- Profile metadata is stored as bash-sourceable key=value files
 - Keep functions small and focused
 - Use `local` variables inside functions
 - Quote all variable expansions
@@ -61,6 +62,7 @@ Open an issue on GitHub with:
 - Your OS and version
 - Bash version (`bash --version`)
 - Git version (`git --version`)
-- Python3 version (`python3 --version`)
+- OpenSSH version (`ssh -V`)
+- sed version (`sed --version`)
 - The exact command you ran
 - The output or error you got

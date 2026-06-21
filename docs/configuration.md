@@ -8,25 +8,21 @@
 ~/.local/bin/git-persona
 ```
 
-### Profile database
+### Profile metadata
 
 ```
-~/.config/git-persona/profiles.json
+~/.config/git-persona/profiles/<id>.conf
 ```
 
-This is a JSON array of profile objects:
+Each file is a simple key=value file that bash can source:
 
-```json
-[
-  {
-    "id": "work",
-    "name": "Work Name",
-    "email": "work@example.com",
-    "base_dir": "/home/andy/dev/work",
-    "key_file": "/home/andy/.ssh/id_ed25519_git_work",
-    "profile_file": "/home/andy/.config/git-persona/profiles/work.gitconfig"
-  }
-]
+```ini
+id="work"
+name="Work Name"
+email="work@example.com"
+base_dir="/home/andy/dev/work"
+key_file="/home/andy/.ssh/id_ed25519_git_work"
+profile_file="/home/andy/.config/git-persona/profiles/work.gitconfig"
 ```
 
 ### Profile configs
@@ -108,3 +104,14 @@ rm -rf ~/.config/git-persona
 ```
 
 Then manually remove any `includeIf` entries from `~/.gitconfig` that reference `git-persona` profile files.
+
+## Dependencies
+
+`git-persona` has no external dependencies beyond standard system tools:
+
+- **bash** 4.0+ — the script itself
+- **git** 2.13+ — for `includeIf` support and config manipulation
+- **openssh** — for `ssh-keygen` to generate SSH keys
+- **sed** — for editing `~/.gitconfig` (standard on all Linux/macOS)
+
+No Python, no jq, no extra packages needed.
