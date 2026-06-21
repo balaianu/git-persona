@@ -1,0 +1,431 @@
+#!/bin/bash
+
+# git-persona: manage multiple git identities with SSH keys and includeIf
+# Usage: git-persona <command> [args]
+# Version: 1.0.0
+# License: MIT
+
+set -euo pipefail
+
+VERSION="1.0.0"
+
+CONFIG_DIR="${HOME}/.config/git-persona"
+PROFILES_DIR="${CONFIG_DIR}/profiles"
+PROFILES_DB="${CONFIG_DIR}/profiles.json"
+SSH_DIR="${HOME}/.ssh"
+GITCONFIG="${HOME}/.gitconfig"
+
+init() {
+    mkdir -p "$PROFILES_DIR"
+    [ -f "$PROFILES_DB" ] || echo "[]" > "$PROFILES_DB"
+    [ -f "$GITCONFIG" ] || touch "$GITCONFIG"
+}
+
+usage() {
+    cat << 'EOF'
+Usage: git-persona <command> [args]
+
+Commands:
+  create <id> <name> <email> [base_dir]  Create a new profile and generate SSH key
+  list                                    List all profiles
+  delete <id>                             Delete a profile and its SSH key
+  use <id>                                Apply profile to current repo
+  use-folder <id> <folder>                Apply profile to a folder via includeIf
+  current                                 Show the profile for the current directory
+  version                                 Show the version of git-persona
+
+Examples:
+  git-persona create work "Work Name" work@example.com ~/work
+  git-persona create personal "Personal Name" personal@example.com ~/personal
+  git-persona use work
+  git-persona use-folder work ~/work
+  git-persona current
+  git-persona version
+EOF
+}
+
+read_profiles() {
+    if [ -f "$PROFILES_DB" ]; then
+        cat "$PROFILES_DB"
+    else
+        echo "[]"
+    fi
+}
+
+write_profiles() {
+    echo "$1" > "$PROFILES_DB"
+}
+
+profile_exists() {
+    local id="$1"
+    read_profiles | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if any(p['id']=='$id' for p in d) else 1)"
+}
+
+get_profile() {
+    local id="$1"
+    read_profiles | python3 -c "import sys,json; d=json.load(sys.stdin); p=[p for p in d if p['id']=='$id']; print(json.dumps(p[0]) if p else '{}')"
+}
+
+add_include_if() {
+    local dir="$1"
+    local profile_file="$2"
+
+    # Add new block
+    printf "\n[includeIf \"gitdir:%s/\"]\n    path = %s\n" "$dir" "$profile_file" >> "$GITCONFIG"
+}
+
+remove_include_if() {
+    local profile_file="$1"
+    if [ -f "$GITCONFIG" ]; then
+        export GITCONFIG PROFILE_FILE="$profile_file"
+        python3 - << 'PYEOF'
+import sys, re, os
+
+with open(os.environ['GITCONFIG'], "r") as f:
+    content = f.read()
+
+# Remove blocks that reference this profile file
+pattern = r"\n?\[includeIf \"gitdir:[^\"]+\"\]\n\s*path = " + re.escape(os.environ['PROFILE_FILE']) + r"\n?"
+content = re.sub(pattern, "\n", content)
+
+# Remove excessive blank lines
+content = re.sub(r"\n{3,}", "\n\n", content)
+
+with open(os.environ['GITCONFIG'], "w") as f:
+    f.write(content)
+PYEOF
+    fi
+}
+
+cmd_create() {
+    if [ $# -lt 3 ]; then
+        echo "Usage: git-persona create <id> <name> <email> [base_dir]"
+        exit 1
+    fi
+
+    local id="$1"
+    local name="$2"
+    local email="$3"
+    local base_dir="${4:-${HOME}/git-profiles/${id}}"
+    local key_file="${SSH_DIR}/id_ed25519_git_${id}"
+    local profile_file="${PROFILES_DIR}/${id}.gitconfig"
+
+    init
+
+    if profile_exists "$id"; then
+        echo "Profile '$id' already exists."
+        exit 1
+    fi
+
+    # Create base directory
+    mkdir -p "$base_dir"
+
+    # Generate SSH key if it doesn't exist
+    if [ ! -f "$key_file" ]; then
+        ssh-keygen -t ed25519 -C "$email" -f "$key_file" -N ""
+    else
+        echo "SSH key already exists at $key_file"
+    fi
+
+    # Create profile gitconfig
+    cat > "$profile_file" << EOF
+[user]
+    name = ${name}
+    email = ${email}
+[core]
+    sshCommand = ssh -i ${key_file} -o IdentitiesOnly=yes
+EOF
+
+    # Add includeIf to main gitconfig (remove old entries first)
+    remove_include_if "$profile_file"
+    add_include_if "$base_dir" "$profile_file"
+
+    # Save profile to database
+    local profile_json
+    profile_json=$(read_profiles | python3 -c "
+import sys, json, os
+id='$id'
+name='$name'
+email='$email'
+base_dir='$base_dir'
+key_file='$key_file'
+profile_file='$profile_file'
+d = json.load(sys.stdin)
+d.append({'id': id, 'name': name, 'email': email, 'base_dir': base_dir, 'key_file': key_file, 'profile_file': profile_file})
+print(json.dumps(d, indent=2))
+")
+    write_profiles "$profile_json"
+
+    echo "Profile '$id' created."
+    echo "  Base directory: $base_dir"
+    echo "  SSH key:        $key_file"
+    echo "  Public key:     ${key_file}.pub"
+    echo ""
+    echo "Add this public key to GitHub:"
+    cat "${key_file}.pub"
+    echo ""
+    echo "Put repos under $base_dir to automatically use this profile."
+}
+
+cmd_list() {
+    init
+    local profiles
+    profiles=$(read_profiles)
+    if [ "$profiles" = "[]" ]; then
+        echo "No profiles found."
+        exit 0
+    fi
+
+    echo "Profiles:"
+    echo "$profiles" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+for p in d:
+    print(f\"  {p['id']}\")
+    print(f\"    name:     {p['name']}\")
+    print(f\"    email:    {p['email']}\")
+    print(f\"    base_dir: {p['base_dir']}\")
+    print(f\"    key:      {p['key_file']}\")
+"
+}
+
+cmd_delete() {
+    if [ $# -lt 1 ]; then
+        echo "Usage: git-persona delete <id>"
+        exit 1
+    fi
+
+    local id="$1"
+    init
+
+    if ! profile_exists "$id"; then
+        echo "Profile '$id' not found."
+        exit 1
+    fi
+
+    local profile_json
+    profile_json=$(get_profile "$id")
+    local key_file profile_file base_dir
+    key_file=$(echo "$profile_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['key_file'])")
+    profile_file=$(echo "$profile_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['profile_file'])")
+    base_dir=$(echo "$profile_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['base_dir'])")
+
+    # Remove SSH key
+    rm -f "$key_file" "${key_file}.pub"
+
+    # Remove profile gitconfig
+    rm -f "$profile_file"
+
+    # Remove includeIf from main gitconfig
+    remove_include_if "$profile_file"
+
+    # Remove from database
+    local updated
+    updated=$(read_profiles | python3 -c "
+import sys, json
+id='${id}'
+d = json.load(sys.stdin)
+d = [p for p in d if p['id'] != id]
+print(json.dumps(d, indent=2))
+")
+    write_profiles "$updated"
+
+    echo "Profile '$id' deleted."
+    echo "Note: base directory $base_dir was not removed."
+}
+
+cmd_use() {
+    if [ $# -lt 1 ]; then
+        echo "Usage: git-persona use <id>"
+        exit 1
+    fi
+
+    local id="$1"
+    init
+
+    if ! profile_exists "$id"; then
+        echo "Profile '$id' not found."
+        exit 1
+    fi
+
+    if [ ! -d ".git" ]; then
+        echo "Not a git repository. Run this from inside a repo."
+        exit 1
+    fi
+
+    local profile_json
+    profile_json=$(get_profile "$id")
+    local name email key_file
+    name=$(echo "$profile_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['name'])")
+    email=$(echo "$profile_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['email'])")
+    key_file=$(echo "$profile_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['key_file'])")
+
+    git config user.name "$name"
+    git config user.email "$email"
+    git config core.sshCommand "ssh -i ${key_file} -o IdentitiesOnly=yes"
+
+    echo "Profile '$id' applied to current repo."
+}
+
+cmd_use_folder() {
+    if [ $# -lt 2 ]; then
+        echo "Usage: git-persona use-folder <id> <folder>"
+        exit 1
+    fi
+
+    local id="$1"
+    local folder="$2"
+    init
+
+    if ! profile_exists "$id"; then
+        echo "Profile '$id' not found."
+        exit 1
+    fi
+
+    if [ ! -d "$folder" ]; then
+        echo "Folder does not exist: $folder"
+        exit 1
+    fi
+
+    local profile_json
+    profile_json=$(get_profile "$id")
+    local profile_file
+    profile_file=$(echo "$profile_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['profile_file'])")
+
+    # Expand to absolute path
+    folder=$(cd "$folder" && pwd)
+
+    add_include_if "$folder" "$profile_file"
+
+    echo "Profile '$id' applied to folder: $folder"
+    echo "Any git repo under this folder will automatically use this profile."
+}
+
+cmd_current() {
+    local current_dir
+    current_dir="$(pwd)"
+
+    local git_name git_email ssh_cmd
+    git_name=""
+    git_email=""
+    ssh_cmd=""
+
+    if [ -d ".git" ] || git rev-parse --git-dir >/dev/null 2>&1; then
+        git_name="$(git config user.name 2>/dev/null || true)"
+        git_email="$(git config user.email 2>/dev/null || true)"
+        ssh_cmd="$(git config core.sshCommand 2>/dev/null || true)"
+    fi
+
+    export GIT_NAME="$git_name"
+    export GIT_EMAIL="$git_email"
+    export GIT_SSH="$ssh_cmd"
+    export CURRENT_DIR="$current_dir"
+
+    local profiles
+    profiles=$(read_profiles)
+
+    # First, try to match by effective git config (local or includeIf)
+    local match
+    match=$(echo "$profiles" | python3 -c "
+import sys, json, os
+name = os.environ.get('GIT_NAME', '')
+email = os.environ.get('GIT_EMAIL', '')
+ssh = os.environ.get('GIT_SSH', '')
+profiles = json.load(sys.stdin)
+for p in profiles:
+    if p.get('name') == name and p.get('email') == email:
+        print(json.dumps(p))
+        sys.exit(0)
+# Fallback: match by SSH key in core.sshCommand
+if ssh:
+    for p in profiles:
+        if p.get('key_file') and p['key_file'] in ssh:
+            print(json.dumps(p))
+            sys.exit(0)
+print('{}')
+" 2>/dev/null || true)
+
+    if [ "$match" != "" ] && [ "$match" != "{}" ]; then
+        local id name email key_file
+        id=$(echo "$match" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+        name=$(echo "$match" | python3 -c "import sys,json; print(json.load(sys.stdin)['name'])")
+        email=$(echo "$match" | python3 -c "import sys,json; print(json.load(sys.stdin)['email'])")
+        key_file=$(echo "$match" | python3 -c "import sys,json; print(json.load(sys.stdin)['key_file'])")
+
+        echo "Current profile: $id"
+        echo "  name:  $name"
+        echo "  email: $email"
+        echo "  key:   $key_file"
+        return 0
+    fi
+
+    # If not in a git repo, check if current dir is under any profile base_dir
+    local dir_match
+    dir_match=$(echo "$profiles" | python3 -c "
+import sys, json, os
+cwd = os.path.abspath(os.environ.get('CURRENT_DIR', os.getcwd()))
+profiles = json.load(sys.stdin)
+for p in profiles:
+    base = os.path.abspath(p.get('base_dir', ''))
+    if cwd == base or cwd.startswith(base + os.sep):
+        print(json.dumps(p))
+        sys.exit(0)
+print('{}')
+" 2>/dev/null || true)
+
+    if [ "$dir_match" != "" ] && [ "$dir_match" != "{}" ]; then
+        local id name email base_dir
+        id=$(echo "$dir_match" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+        name=$(echo "$dir_match" | python3 -c "import sys,json; print(json.load(sys.stdin)['name'])")
+        email=$(echo "$dir_match" | python3 -c "import sys,json; print(json.load(sys.stdin)['email'])")
+        base_dir=$(echo "$dir_match" | python3 -c "import sys,json; print(json.load(sys.stdin)['base_dir'])")
+
+        echo "Profile that would apply here: $id"
+        echo "  name:     $name"
+        echo "  email:    $email"
+        echo "  base_dir: $base_dir"
+        echo "  (no git repo detected in this directory)"
+        return 0
+    fi
+
+    echo "No matching profile found for this location."
+}
+
+# Main
+init
+
+case "${1:-}" in
+    create)
+        shift
+        cmd_create "$@"
+        ;;
+    list)
+        cmd_list
+        ;;
+    delete)
+        shift
+        cmd_delete "$@"
+        ;;
+    use)
+        shift
+        cmd_use "$@"
+        ;;
+    use-folder)
+        shift
+        cmd_use_folder "$@"
+        ;;
+    current)
+        cmd_current
+        ;;
+    version|--version|-v)
+        echo "git-persona $VERSION"
+        ;;
+    help|--help|-h|"")
+        usage
+        ;;
+    *)
+        echo "Unknown command: $1"
+        usage
+        exit 1
+        ;;
+esac
