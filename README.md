@@ -35,11 +35,11 @@ If you work with multiple GitHub accounts (work, personal, open-source), you nee
 | Linux (Ubuntu, Debian, Fedora, Arch, etc.) | Fully supported | |
 | Alpine Linux | Fully supported | Pure bash, no GNU sed needed |
 | macOS | Fully supported | Uses built-in bash (or Homebrew bash 5+) |
-| Windows (Git Bash) | Supported | Comes with Git for Windows. See note below |
+| Windows (Git Bash) | Untested, expected to work | Comes with Git for Windows. See note below |
 | Windows (WSL) | Fully supported | Same as Linux |
 | Windows (PowerShell/cmd) | Not supported | Use Git Bash or WSL |
 
-**Windows with Git Bash:** The script works as-is. Git for Windows includes a full bash environment with `ssh-keygen` and all required tools. The `includeIf` paths in `~/.gitconfig` will use Unix-style paths (e.g. `/c/Users/.../dev/work/`), which Git on Windows accepts. Install via the one-liner from a Git Bash terminal.
+**Windows with Git Bash:** Expected to work but not yet tested. Git for Windows includes a full bash environment with `ssh-keygen` and all required tools. The `includeIf` paths in `~/.gitconfig` will use Unix-style paths (e.g. `/c/Users/.../dev/work/`), which Git on Windows accepts. Install via the one-liner from a Git Bash terminal.
 
 ## Installation
 
