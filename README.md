@@ -1,26 +1,61 @@
 # git-persona
 
-A CLI tool to manage multiple Git identities with SSH keys and `includeIf` automation.
+> Manage multiple Git identities with SSH keys and `includeIf` automation — no more accidental commits with the wrong email.
 
-## Why
+[![Tests](https://github.com/balaianu/git-persona/actions/workflows/tests.yml/badge.svg)](https://github.com/balaianu/git-persona/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Version](https://img.shields.io/badge/version-1.3.0-green.svg)](https://github.com/balaianu/git-persona/releases)
+[![Bash](https://img.shields.io/badge/bash-4.0%2B-green.svg)](https://www.gnu.org/software/bash/)
+[![Buy Me A Coffee](https://img.shields.io/badge/☕-Buy%20Me%20A%20Coffee-yellow)](https://buymeacoffee.com/balaianu)
 
-If you work with multiple GitHub accounts (work, personal, open-source), you need different `user.name`, `user.email`, and SSH keys per repository. Doing this manually is error-prone and tedious.
+---
 
-`git-persona` automates the entire workflow:
+## The problem
 
-- Generates SSH keys for each identity
-- Creates profile-specific Git configs
-- Wires up `includeIf` rules so repos in specific folders automatically use the right identity
-- Lets you manually apply a profile to any repo or folder
+You have a work GitHub account and a personal GitHub account. You clone repos into different folders. But every now and then, you commit to a personal repo with your work email — or worse, commit to a work repo with your personal email. Now your commit history is wrong, and fixing it means rewriting history.
+
+Managing this manually is error-prone:
+
+```bash
+git config user.name "Work Name"
+git config user.email work@example.com
+git config core.sshCommand "ssh -i ~/.ssh/id_ed25519_work"
+# ... repeat for every single repo
+```
+
+## The solution
+
+`git-persona` creates identity profiles and wires them up to folders. Any repo under a profile's folder **automatically** uses the right name, email, and SSH key. No per-repo config needed.
+
+```bash
+git persona create work "Work Name" work@example.com ~/dev/work
+git persona create personal "Personal Name" personal@example.com ~/dev/personal
+```
+
+Now every repo under `~/dev/work/` uses your work identity. Every repo under `~/dev/personal/` uses your personal identity. Done.
 
 ## Features
 
-- Create, list, and delete Git identity profiles
-- Automatic SSH key generation (ed25519) per profile
-- Folder-based automatic identity switching via `includeIf`
-- Per-repo manual identity application
-- Show which profile applies to the current directory
-- No runtime dependencies beyond `bash`, `git`, and `ssh-keygen`
+- **Automatic identity switching** — repos in different folders use different Git identities via `includeIf`
+- **SSH key management** — generates ed25519 keys per profile, names them consistently
+- **Per-repo override** — apply a profile to any repo manually
+- **Current profile detection** — see which identity is active in any directory
+- **Zero dependencies** — pure bash, works on any Linux and macOS
+- **Git subcommand** — use `git persona` natively (not just `git-persona`)
+
+## Table of contents
+
+- [Requirements](#requirements)
+- [Compatibility](#compatibility)
+- [Installation](#installation)
+- [Usage](#usage)
+- [How it works](#how-it-works)
+- [File locations](#file-locations)
+- [Testing](#testing)
+- [Changelog](#changelog)
+- [Contributing](#contributing)
+- [License](#license)
+- [Support](#support)
 
 ## Requirements
 
@@ -54,7 +89,7 @@ Downloads the script and installs it to `~/.local/bin/git-persona`. No cloning r
 ### From source
 
 ```bash
-git clone git@github.com:balaianu/git-persona.git
+git clone https://github.com/balaianu/git-persona.git
 cd git-persona
 make install
 ```
@@ -130,6 +165,20 @@ The profile will only set `user.name` and `user.email`, without `core.sshCommand
 git persona list
 ```
 
+```
+Profiles:
+  work
+    name:     Work Name
+    email:    work@example.com
+    base_dir: /home/andy/dev/work
+    key:      /home/andy/.ssh/id_ed25519_git_work
+  personal
+    name:     Personal Name
+    email:    personal@example.com
+    base_dir: /home/andy/dev/personal
+    key:      /home/andy/.ssh/id_ed25519_git_personal
+```
+
 ### Apply a profile to the current repo
 
 ```bash
@@ -149,6 +198,13 @@ Any git repo under `~/projects/client-a/` will automatically use the `work` prof
 
 ```bash
 git persona current
+```
+
+```
+Current profile: work
+  name:  Work Name
+  email: work@example.com
+  key:   /home/andy/.ssh/id_ed25519_git_work
 ```
 
 ### Delete a profile
@@ -206,7 +262,7 @@ Each profile config sets `user.name`, `user.email`, and `core.sshCommand`:
     sshCommand = ssh -i /home/andy/.ssh/id_ed25519_git_work -o IdentitiesOnly=yes
 ```
 
-So any repo under `~/dev/work/` automatically uses the work identity and SSH key.
+So any repo under `~/dev/work/` automatically uses the work identity and SSH key. No per-repo config needed.
 
 ## File locations
 
@@ -217,12 +273,6 @@ So any repo under `~/dev/work/` automatically uses the work identity and SSH key
 | `~/.config/git-persona/profiles/<id>.gitconfig` | Per-profile Git config |
 | `~/.ssh/id_ed25519_git_<id>` | Per-profile SSH key |
 | `~/.gitconfig` | Modified with `includeIf` entries |
-
-## Documentation
-
-- [Usage Guide](docs/usage.md)
-- [Configuration](docs/configuration.md)
-- [Contributing](docs/contributing.md)
 
 ## Testing
 
@@ -236,14 +286,32 @@ Or directly:
 bash tests/test_basic.sh
 ```
 
-The test suite runs in an isolated temp directory and won't touch your real profiles or SSH keys.
+The test suite runs in an isolated temp directory and won't touch your real profiles or SSH keys. 70 tests covering all commands, flags, and edge cases.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for version history.
+
+## Contributing
+
+See [Contributing Guide](docs/contributing.md) for development setup, testing, and code style.
+
+Pull requests are welcome. Please ensure tests pass before submitting.
+
+## Documentation
+
+- [Usage Guide](docs/usage.md) — detailed command reference
+- [Configuration](docs/configuration.md) — file locations and internals
+- [Contributing](docs/contributing.md) — development setup and guidelines
+- [Changelog](CHANGELOG.md) — version history
+- [Code of Conduct](CODE_OF_CONDUCT.md) — community standards
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE)
 
 ## Support
 
 If you find this tool useful, consider buying me a coffee:
 
-[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support-yellow)](https://buymeacoffee.com/balaianu)
+[![Buy Me A Coffee](https://img.shields.io/badge/☕-Buy%20Me%20A%20Coffee-yellow)](https://buymeacoffee.com/balaianu)

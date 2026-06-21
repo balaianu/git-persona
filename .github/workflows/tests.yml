@@ -1,0 +1,23 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run test suite
+        run: bash tests/test_basic.sh
+
+      - name: Verify syntax
+        run: bash -n src/git-persona && bash -n install.sh
