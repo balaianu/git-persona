@@ -39,7 +39,7 @@ If you work with multiple GitHub accounts (work, personal, open-source), you nee
 | Windows (WSL) | Fully supported | Same as Linux |
 | Windows (PowerShell/cmd) | Not supported | Use Git Bash or WSL |
 
-**Windows with Git Bash:** Expected to work but not yet tested. Git for Windows includes a full bash environment with `ssh-keygen` and all required tools. The `includeIf` paths in `~/.gitconfig` will use Unix-style paths (e.g. `/c/Users/.../dev/work/`), which Git on Windows accepts. Install via the one-liner from a Git Bash terminal.
+**Windows with Git Bash:** Expected to work but not yet tested. Git for Windows includes a full bash environment with `ssh-keygen` and all required tools. There may be a path format mismatch between Git Bash's MSYS-style paths (`/c/Users/...`) and what Git's `includeIf` expects on Windows. Install via the one-liner from a Git Bash terminal. If you test it, please open an issue with your results.
 
 ## Installation
 
