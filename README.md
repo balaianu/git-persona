@@ -1,6 +1,8 @@
 # git-persona
 
-> Manage multiple Git identities with SSH keys and `includeIf` automation — no more accidental commits with the wrong email.
+> **Never commit with the wrong Git identity again.**
+>
+> Automatically switch Git name, email, and SSH key based on repository location using Git's built-in `includeIf` feature.
 
 [![Tests](https://github.com/balaianu/git-persona/actions/workflows/tests.yml/badge.svg)](https://github.com/balaianu/git-persona/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
@@ -36,19 +38,21 @@ Now every repo under `~/dev/work/` uses your work identity. Every repo under `~/
 
 ## Features
 
-- **Automatic identity switching** — repos in different folders use different Git identities via `includeIf`
-- **SSH key management** — generates ed25519 keys per profile, names them consistently
-- **Per-repo override** — apply a profile to any repo manually
-- **Current profile detection** — see which identity is active in any directory
-- **Zero dependencies** — pure bash, works on any Linux and macOS
-- **Git subcommand** — use `git persona` natively (not just `git-persona`)
+- Automatic identity switching using Git's native `includeIf`
+- Automatic SSH key generation per profile
+- Per-repository profile overrides
+- Current profile detection
+- Native Git subcommand (`git persona`)
+- Zero runtime dependencies (pure Bash)
+- Linux, macOS, and WSL support
 
 ## Table of contents
 
 - [Requirements](#requirements)
 - [Compatibility](#compatibility)
 - [Installation](#installation)
-- [Usage](#usage)
+- [Quick Start](#quick-start)
+- [Command reference](#command-reference)
 - [How it works](#how-it-works)
 - [File locations](#file-locations)
 - [Testing](#testing)
@@ -67,12 +71,12 @@ Now every repo under `~/dev/work/` uses your work identity. Every repo under `~/
 
 | Platform | Status | Notes |
 |---|---|---|
-| Linux (Ubuntu, Debian, Fedora, Arch, etc.) | Fully supported | |
-| Alpine Linux | Fully supported | Pure bash, no GNU sed needed |
-| macOS | Fully supported | Uses built-in bash (or Homebrew bash 5+) |
-| Windows (Git Bash) | Untested, expected to work | Comes with Git for Windows. See note below |
-| Windows (WSL) | Fully supported | Same as Linux |
-| Windows (PowerShell/cmd) | Not supported | Use Git Bash or WSL |
+| Linux (Ubuntu, Debian, Fedora, Arch, etc.) | ✅ Fully supported | |
+| Alpine Linux | ✅ Fully supported | Pure bash, no GNU sed needed |
+| macOS | ✅ Fully supported | Uses built-in bash (or Homebrew bash 5+) |
+| Windows (WSL) | ✅ Fully supported | Same as Linux |
+| Windows (Git Bash) | ⚠️ Expected to work (untested) | Comes with Git for Windows. See note below |
+| Windows (PowerShell/cmd) | ❌ Not supported | Use Git Bash or WSL |
 
 **Windows with Git Bash:** Expected to work but not yet tested. Git for Windows includes a full bash environment with `ssh-keygen` and all required tools. There may be a path format mismatch between Git Bash's MSYS-style paths (`/c/Users/...`) and what Git's `includeIf` expects on Windows. Install via the one-liner from a Git Bash terminal. If you test it, please open an issue with your results.
 
@@ -128,7 +132,38 @@ This removes the script from `~/.local/bin/`. Profile data in `~/.config/git-per
 rm -rf ~/.config/git-persona
 ```
 
-## Usage
+## Quick Start
+
+Create two identities:
+
+```bash
+git persona create work "Work Name" work@example.com ~/dev/work
+git persona create personal "Personal Name" personal@example.com ~/dev/personal
+```
+
+Add the printed SSH public keys to the corresponding GitHub accounts, then clone repos into the matching folders. Every repo under `~/dev/work/` automatically uses your work identity; every repo under `~/dev/personal/` uses your personal one.
+
+Verify the active profile:
+
+```bash
+git persona current
+```
+
+List configured profiles:
+
+```bash
+git persona list
+```
+
+Apply a profile manually to the current repository:
+
+```bash
+git persona use work
+```
+
+See the [Command reference](#command-reference) below for all commands and flags.
+
+## Command reference
 
 Since the script is named `git-persona`, Git automatically recognizes it as a subcommand. Both forms work identically:
 
