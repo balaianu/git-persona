@@ -266,6 +266,25 @@ assert_contains "gitconfig has work includeIf" "gitdir:$TEST_WORKDIR/" "$GITCONF
 assert_contains "gitconfig has extra includeIf" "gitdir:$TEST_EXTRA/" "$GITCONFIG_CONTENT"
 assert_contains "gitconfig has personal includeIf" "gitdir:$TEST_PERSONALDIR/" "$GITCONFIG_CONTENT"
 
+# --- Use-folder dedup: same folder twice should not duplicate the block ---
+echo "--- Use-folder dedup ---"
+BEFORE_COUNT=$(grep -c "gitdir:$TEST_EXTRA/" "$TEST_HOME/.gitconfig")
+output=$(run use-folder work "$TEST_EXTRA")
+assert_contains "use-folder repeat succeeds" "applied to folder" "$output"
+AFTER_COUNT=$(grep -c "gitdir:$TEST_EXTRA/" "$TEST_HOME/.gitconfig")
+assert_equals "no duplicate includeIf block" "$BEFORE_COUNT" "$AFTER_COUNT"
+
+# --- Use-folder dedup: create-then-use-folder on the same dir ---
+echo "--- Create then use-folder dedup ---"
+TEST_DEDUP="$TEST_HOME/dedup"
+mkdir -p "$TEST_DEDUP"
+output=$(run create dedup "Dedup" dedup@test.com "$TEST_DEDUP" --no-ssh-key 2>&1)
+assert_contains "dedup profile created" "Profile 'dedup' created" "$output"
+BEFORE_COUNT=$(grep -c "gitdir:$TEST_DEDUP/" "$TEST_HOME/.gitconfig")
+output=$(run use-folder dedup "$TEST_DEDUP")
+AFTER_COUNT=$(grep -c "gitdir:$TEST_DEDUP/" "$TEST_HOME/.gitconfig")
+assert_equals "create+use-folder no duplicate" "$BEFORE_COUNT" "$AFTER_COUNT"
+
 # --- Delete profile (default: keeps keys) ---
 echo "--- Delete (default, keeps keys) ---"
 output=$(run delete work)

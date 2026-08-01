@@ -75,6 +75,20 @@ get_field() {
 add_include_if() {
     local dir="$1"
     local profile_file="$2"
+    local header="[includeIf \"gitdir:${dir}/\"]"
+
+    # Skip if an includeIf block for this exact directory already exists,
+    # so repeated `use-folder` (or `create` then `use-folder` on the same
+    # dir) does not produce duplicate blocks.
+    if [ -f "$GITCONFIG" ]; then
+        local line
+        while IFS= read -r line || [ -n "$line" ]; do
+            if [ "$line" = "$header" ]; then
+                return 0
+            fi
+        done < "$GITCONFIG"
+    fi
+
     printf "\n[includeIf \"gitdir:%s/\"]\n    path = %s\n" "$dir" "$profile_file" >> "$GITCONFIG"
 }
 
