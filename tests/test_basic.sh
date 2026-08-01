@@ -184,6 +184,25 @@ cd "$TEST_HOME"
 RECOVERED=$(TEST_HOME="$TEST_HOME" bash -c '. "$TEST_HOME/.config/git-persona/profiles/special.conf"; printf "%s" "$name"')
 assert_equals "special name round-trips via sourcing" "$SPECIAL_NAME" "$RECOVERED"
 
+# --- Create with $ and backtick in name (must not execute on read) ---
+echo "--- Create ($ and backtick in name) ---"
+# Use a sentinel that would only appear if command substitution ran.
+DOLLAR_NAME='Price $HOME is $5 and `echo PWNED`'
+output=$(run create dollar "$DOLLAR_NAME" dollar@test.com "$TEST_HOME/dollar" --no-ssh-key 2>&1)
+assert_contains "create dollar success" "Profile 'dollar' created" "$output"
+# list must show the literal name with backticks and dollar signs intact
+# (if backtick executed, the backtick chars would be consumed and replaced
+# by command output; if $ expanded, $HOME would become a path).
+output=$(run list 2>&1)
+assert_contains "list shows dollar name verbatim" '$5' "$output"
+assert_contains "list shows dollar backtick verbatim" '`echo PWNED`' "$output"
+# The backtick char must still be present (execution would consume it)
+assert_contains "list preserves backtick char (not executed)" '`' "$output"
+assert_contains "list preserves dollar char (not expanded)" '$HOME' "$output"
+# Round-trip via sourcing
+RECOVERED=$(TEST_HOME="$TEST_HOME" bash -c '. "$TEST_HOME/.config/git-persona/profiles/dollar.conf"; printf "%s" "$name"')
+assert_equals "dollar name round-trips via sourcing" "$DOLLAR_NAME" "$RECOVERED"
+
 # --- List ---
 echo "--- List ---"
 output=$(run list)

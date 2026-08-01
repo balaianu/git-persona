@@ -55,10 +55,14 @@ profile_exists() {
 }
 
 # Escape a value for safe embedding inside double quotes in a bash-sourceable
-# conf file. Backslash first, then double quote — order matters.
+# conf file. Inside double quotes bash expands $ and ` and \ and ", so all
+# four must be escaped. Backslash first (it escapes the others), then the
+# rest in any order.
 shell_escape() {
     local s="$1"
     s="${s//\\/\\\\}"
+    s="${s//\$/\\\$}"
+    s="${s//\`/\\\`}"
     s="${s//\"/\\\"}"
     printf '%s' "$s"
 }
