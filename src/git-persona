@@ -389,33 +389,41 @@ cmd_current() {
         ssh_cmd="$(git config core.sshCommand 2>/dev/null || true)"
     fi
 
-    local conf
-    for conf in "${PROFILES_DIR}"/*.conf; do
-        [ -f "$conf" ] || continue
-        . "$conf"
-
-        local matched=false
-        if [ -n "$git_name" ] && [ -n "$git_email" ]; then
-            if [ "$name" = "$git_name" ] && [ "$email" = "$git_email" ]; then
-                matched=true
+    # Pass 1: strongest signal — the SSH key in core.sshCommand uniquely
+    # identifies a profile even when several share the same name+email.
+    if [ -n "$ssh_cmd" ]; then
+        for conf in "${PROFILES_DIR}"/*.conf; do
+            [ -f "$conf" ] || continue
+            . "$conf"
+            if [ -n "$key_file" ]; then
+                case "$ssh_cmd" in
+                    *"$key_file"*)
+                        echo "Current profile: $id"
+                        echo "  name:  $name"
+                        echo "  email: $email"
+                        echo "  key:   $key_file"
+                        return 0
+                        ;;
+                esac
             fi
-        fi
-        if [ "$matched" = false ] && [ -n "$ssh_cmd" ] && [ -n "$key_file" ]; then
-            case "$ssh_cmd" in
-                *"$key_file"*)
-                    matched=true
-                    ;;
-            esac
-        fi
+        done
+    fi
 
-        if [ "$matched" = true ]; then
-            echo "Current profile: $id"
-            echo "  name:  $name"
-            echo "  email: $email"
-            echo "  key:   $key_file"
-            return 0
-        fi
-    done
+    # Pass 2: weaker signal — name+email. When multiple profiles share these,
+    # the first match wins (there is no way to distinguish them further).
+    if [ -n "$git_name" ] && [ -n "$git_email" ]; then
+        for conf in "${PROFILES_DIR}"/*.conf; do
+            [ -f "$conf" ] || continue
+            . "$conf"
+            if [ "$name" = "$git_name" ] && [ "$email" = "$git_email" ]; then
+                echo "Current profile: $id"
+                echo "  name:  $name"
+                echo "  email: $email"
+                echo "  key:   ${key_file:-}"
+                return 0
+            fi
+        done
+    fi
 
     for conf in "${PROFILES_DIR}"/*.conf; do
         [ -f "$conf" ] || continue

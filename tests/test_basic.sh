@@ -252,6 +252,30 @@ output=$(run current)
 assert_contains "current in repo shows work" "work" "$output"
 assert_contains "current in repo shows name" "Test Work" "$output"
 
+# --- Current disambiguation: two profiles, same name+email, different keys ---
+echo "--- Current (disambiguation by key) ---"
+# Create a second profile that shares work's name+email but has its own key/dir.
+TEST_TWIN_DIR="$TEST_HOME/twin"
+output=$(run create twin "Test Work" work@test.com "$TEST_TWIN_DIR" 2>&1)
+assert_contains "twin profile created" "Profile 'twin' created" "$output"
+# In TEST_REPO (which had `use work` applied), current must resolve to work,
+# not twin, because the repo's sshCommand points at work's key.
+cd "$TEST_REPO"
+output=$(run current)
+assert_contains "current resolves to work by key" "Current profile: work" "$output"
+assert_not_contains "current does not resolve to twin" "Current profile: twin" "$output"
+# Now apply twin to a fresh repo and confirm current resolves to twin there.
+TEST_TWIN_REPO="$TEST_TWIN_DIR/twin-repo"
+mkdir -p "$TEST_TWIN_REPO"
+cd "$TEST_TWIN_REPO"
+git init -q
+run use twin
+output=$(run current)
+assert_contains "current resolves to twin by key" "Current profile: twin" "$output"
+# Clean up twin so its "Test Work" name doesn't interfere with later
+# substring-based assertions (e.g. "list after delete - work should be gone").
+run delete twin --with-keys >/dev/null 2>&1
+
 # --- Use-folder ---
 echo "--- Use-folder ---"
 TEST_EXTRA="$TEST_HOME/extra"
