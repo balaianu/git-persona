@@ -54,6 +54,15 @@ profile_exists() {
     [ -f "${PROFILES_DIR}/${id}.conf" ]
 }
 
+# Escape a value for safe embedding inside double quotes in a bash-sourceable
+# conf file. Backslash first, then double quote — order matters.
+shell_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    printf '%s' "$s"
+}
+
 get_field() {
     local id="$1"
     local field="$2"
@@ -189,11 +198,11 @@ EOF
 
     cat > "$conf_file" << EOF
 id="${id}"
-name="${name}"
-email="${email}"
-base_dir="${base_dir}"
-key_file="${key_file}"
-profile_file="${profile_file}"
+name="$(shell_escape "$name")"
+email="$(shell_escape "$email")"
+base_dir="$(shell_escape "$base_dir")"
+key_file="$(shell_escape "$key_file")"
+profile_file="$(shell_escape "$profile_file")"
 EOF
 
     add_include_if "$base_dir" "$profile_file"

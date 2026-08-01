@@ -167,6 +167,23 @@ output=$(run create nokey2 "No Key 2" nokey2@test.com "$TEST_HOME/nokey2" --no-s
 assert_contains "create nokey2 success" "Profile 'nokey2' created" "$output"
 assert_file_not_exists "nokey2 ssh key" "$TEST_HOME/.ssh/id_ed25519_git_nokey2"
 
+# --- Create with special characters in name (conf sourcing safety) ---
+echo "--- Create (special chars in name) ---"
+SPECIAL_NAME='Name "quoted" \backslash'
+output=$(run create special "$SPECIAL_NAME" special@test.com "$TEST_HOME/special" --no-ssh-key 2>&1)
+assert_contains "create special success" "Profile 'special' created" "$output"
+# list must not error out and must show the original name verbatim
+output=$(run list 2>&1)
+assert_contains "list shows special name verbatim" "$SPECIAL_NAME" "$output"
+# current via base_dir match must also work
+cd "$TEST_HOME/special"
+output=$(run current 2>&1)
+assert_contains "current shows special name" "$SPECIAL_NAME" "$output"
+cd "$TEST_HOME"
+# get_field round-trips the name exactly
+RECOVERED=$(TEST_HOME="$TEST_HOME" bash -c '. "$TEST_HOME/.config/git-persona/profiles/special.conf"; printf "%s" "$name"')
+assert_equals "special name round-trips via sourcing" "$SPECIAL_NAME" "$RECOVERED"
+
 # --- List ---
 echo "--- List ---"
 output=$(run list)
