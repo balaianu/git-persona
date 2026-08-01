@@ -328,6 +328,30 @@ output=$(run use-folder dedup "$TEST_DEDUP")
 AFTER_COUNT=$(grep -c "gitdir:$TEST_DEDUP/" "$TEST_HOME/.gitconfig")
 assert_equals "create+use-folder no duplicate" "$BEFORE_COUNT" "$AFTER_COUNT"
 
+# --- Use-folder reassignment: same folder, different profile updates path ---
+echo "--- Use-folder reassignment ---"
+# TEST_EXTRA currently points to work.gitconfig. Reassign it to personal.
+output=$(run use-folder personal "$TEST_EXTRA")
+assert_contains "reassignment succeeds" "applied to folder" "$output"
+# Still exactly one block for this dir
+REASSIGN_COUNT=$(grep -c "gitdir:$TEST_EXTRA/" "$TEST_HOME/.gitconfig")
+assert_equals "reassignment keeps single block" "1" "$REASSIGN_COUNT"
+# The path must now point to personal, not work. Extract the path line
+# that follows the TEST_EXTRA header using pure bash.
+EXTRA_HEADER="[includeIf \"gitdir:$TEST_EXTRA/\"]"
+EXTRA_BLOCK_PATH=""
+found=0
+while IFS= read -r tline || [ -n "$tline" ]; do
+    if [ "$found" = 1 ]; then
+        case "$tline" in
+            *path\ =*) EXTRA_BLOCK_PATH="$tline"; break;;
+        esac
+    fi
+    [ "$tline" = "$EXTRA_HEADER" ] && found=1
+done < "$TEST_HOME/.gitconfig"
+assert_contains "reassignment points to personal" "personal.gitconfig" "$EXTRA_BLOCK_PATH"
+assert_not_contains "reassignment no longer points to work" "work.gitconfig" "$EXTRA_BLOCK_PATH"
+
 # --- Delete profile (default: keeps keys) ---
 echo "--- Delete (default, keeps keys) ---"
 output=$(run delete work)
@@ -344,7 +368,8 @@ assert_file_not_exists "profile gitconfig removed" "$TEST_HOME/.config/git-perso
 echo "--- IncludeIf cleanup ---"
 GITCONFIG_CONTENT=$(cat "$TEST_HOME/.gitconfig")
 assert_not_contains "work includeIf removed" "work.gitconfig" "$GITCONFIG_CONTENT"
-assert_not_contains "extra includeIf removed" "extra" "$GITCONFIG_CONTENT"
+# TEST_EXTRA was reassigned to personal, so it must survive the work delete.
+assert_contains "extra includeIf survives (reassigned to personal)" "gitdir:$TEST_EXTRA/" "$GITCONFIG_CONTENT"
 
 # --- List after delete ---
 echo "--- List after delete ---"

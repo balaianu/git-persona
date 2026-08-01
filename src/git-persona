@@ -81,19 +81,54 @@ add_include_if() {
     local profile_file="$2"
     local header="[includeIf \"gitdir:${dir}/\"]"
 
-    # Skip if an includeIf block for this exact directory already exists,
-    # so repeated `use-folder` (or `create` then `use-folder` on the same
-    # dir) does not produce duplicate blocks.
-    if [ -f "$GITCONFIG" ]; then
-        local line
-        while IFS= read -r line || [ -n "$line" ]; do
-            if [ "$line" = "$header" ]; then
-                return 0
-            fi
-        done < "$GITCONFIG"
-    fi
+    # If no gitconfig exists yet, just append.
+    [ -f "$GITCONFIG" ] || {
+        printf "\n[includeIf \"gitdir:%s/\"]\n    path = %s\n" "$dir" "$profile_file" >> "$GITCONFIG"
+        return 0
+    }
 
-    printf "\n[includeIf \"gitdir:%s/\"]\n    path = %s\n" "$dir" "$profile_file" >> "$GITCONFIG"
+    # Scan for an existing block with this exact directory header.
+    # - Same path  -> no-op (true dedup).
+    # - Different path -> update the path line in place (reassignment).
+    # - No match   -> append a new block.
+    local tmp_file="${GITCONFIG}.tmp.$$"
+    local found_header=0
+    local updated=0
+    local line trimmed
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ "$found_header" = 1 ]; then
+            trimmed="${line#"${line%%[![:space:]]*}"}"
+            if [ "$trimmed" = "path = ${profile_file}" ]; then
+                # Exact match — true dedup, copy through unchanged.
+                printf '%s\n' "$line"
+                found_header=0
+                updated=1
+                continue
+            elif [ "${trimmed:0:6}" = "path =" ]; then
+                # Header exists but points to a different profile — reassign.
+                printf '    path = %s\n' "$profile_file"
+                found_header=0
+                updated=1
+                continue
+            fi
+            # Not a path line — copy through, keep scanning for the path.
+            printf '%s\n' "$line"
+            continue
+        fi
+
+        if [ "$line" = "$header" ]; then
+            found_header=1
+        fi
+        printf '%s\n' "$line"
+    done < "$GITCONFIG" > "$tmp_file"
+
+    if [ "$updated" = 1 ]; then
+        mv "$tmp_file" "$GITCONFIG"
+    else
+        rm -f "$tmp_file"
+        printf "\n[includeIf \"gitdir:%s/\"]\n    path = %s\n" "$dir" "$profile_file" >> "$GITCONFIG"
+    fi
 }
 
 remove_include_if() {
