@@ -95,7 +95,10 @@ remove_include_if() {
                 printf '%s\n' "$saved_header"
                 in_block=0
             else
-                if [ "$line" = "    path = ${profile_file}" ] || [ "$line" = "	path = ${profile_file}" ]; then
+                # Strip leading whitespace so any indent (spaces, tabs, or
+                # unusual counts) is accepted, not just the 4-space/tab we write.
+                local trimmed="${line#"${line%%[![:space:]]*}"}"
+                if [ "$trimmed" = "path = ${profile_file}" ]; then
                     in_block=0
                     continue
                 else

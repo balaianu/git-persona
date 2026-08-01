@@ -316,6 +316,27 @@ output=$(run delete --with-keys testorder)
 assert_contains "testorder deleted" "Profile 'testorder' deleted" "$output"
 assert_file_not_exists "testorder key removed" "$TEST_HOME/.ssh/id_ed25519_git_testorder"
 
+# --- Delete removes includeIf block with non-standard indentation ---
+echo "--- Delete (non-standard indent in gitconfig) ---"
+output=$(run create indent "Indent Test" indent@test.com "$TEST_HOME/indent" 2>&1)
+INDENT_PROFILE_FILE="$TEST_HOME/.config/git-persona/profiles/indent.gitconfig"
+# Rewrite .gitconfig so the includeIf block uses 2-space indent (not the 4 we write)
+cat > "$TEST_HOME/.gitconfig" << EOF
+[user]
+    name = Someone
+    email = someone@test.com
+
+[includeIf "gitdir:$TEST_HOME/indent/"]
+  path = $INDENT_PROFILE_FILE
+EOF
+output=$(run delete indent 2>&1)
+assert_contains "indent deleted" "Profile 'indent' deleted" "$output"
+GITCONFIG_CONTENT=$(cat "$TEST_HOME/.gitconfig")
+assert_not_contains "indent includeIf header removed" "indent.gitconfig" "$GITCONFIG_CONTENT"
+assert_not_contains "indent includeIf path removed" "$INDENT_PROFILE_FILE" "$GITCONFIG_CONTENT"
+# The unrelated [user] block must survive
+assert_contains "user block preserved" "[user]" "$GITCONFIG_CONTENT"
+
 # --- Delete non-existent profile ---
 echo "--- Delete non-existent ---"
 output=$(run delete nonexistent 2>&1 || true)
