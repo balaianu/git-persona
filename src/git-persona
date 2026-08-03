@@ -215,6 +215,7 @@ cmd_create() {
     local email="${positional[2]}"
     local base_dir="${positional[3]:-${HOME}/git-profiles/${id}}"
     base_dir="${base_dir%/}"
+    base_dir="$(cd "$base_dir" 2>/dev/null && pwd || echo "$base_dir")"
     local key_file="${SSH_DIR}/id_ed25519_git_${id}"
     local profile_file="${PROFILES_DIR}/${id}.gitconfig"
     local conf_file="${PROFILES_DIR}/${id}.conf"
