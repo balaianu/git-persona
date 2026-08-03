@@ -352,6 +352,16 @@ done < "$TEST_HOME/.gitconfig"
 assert_contains "reassignment points to personal" "personal.gitconfig" "$EXTRA_BLOCK_PATH"
 assert_not_contains "reassignment no longer points to work" "work.gitconfig" "$EXTRA_BLOCK_PATH"
 
+# --- Current in a use-folder dir (not the original base_dir) ---
+echo "--- Current (use-folder dir, non-repo) ---"
+# TEST_EXTRA was reassigned to personal via use-folder. personal's original
+# base_dir is TEST_PERSONALDIR, not TEST_EXTRA. current must still match here
+# by reading the includeIf block from .gitconfig, not the stale base_dir.
+cd "$TEST_EXTRA"
+output=$(run current)
+assert_contains "current matches in use-folder dir" "personal" "$output"
+assert_contains "current shows no repo in use-folder dir" "no git repo" "$output"
+
 # --- Delete profile (default: keeps keys) ---
 echo "--- Delete (default, keeps keys) ---"
 output=$(run delete work)

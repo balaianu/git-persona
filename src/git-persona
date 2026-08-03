@@ -76,6 +76,50 @@ get_field() {
     eval "echo \"\${${field}:-}\""
 }
 
+# Scan ~/.gitconfig for an [includeIf "gitdir:DIR/"] block whose DIR matches
+# current_dir. Returns the profile_file path from that block, or empty.
+# ~/.gitconfig is the source of truth for which folders map to which profile;
+# the base_dir field in .conf is only set at create time and can go stale.
+match_includefile() {
+    local current_dir="$1"
+    [ -f "$GITCONFIG" ] || return 0
+
+    local in_block=0
+    local block_dir=""
+    local line inner trimmed
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ "$in_block" = 1 ]; then
+            trimmed="${line#"${line%%[![:space:]]*}"}"
+            if [ "${trimmed:0:6}" = "path =" ]; then
+                local profile_file="${trimmed#path = }"
+                case "$current_dir" in
+                    "$block_dir"|"$block_dir"/*)
+                        printf '%s' "$profile_file"
+                        return 0
+                        ;;
+                esac
+                in_block=0
+            elif [ -z "$line" ] || [ "${line:0:1}" = "[" ]; then
+                in_block=0
+            fi
+            continue
+        fi
+
+        if [ "${line:0:11}" = "[includeIf " ]; then
+            inner="${line#[includeIf \"}"
+            inner="${inner%\"]}"
+            case "$inner" in
+                gitdir:*)
+                    block_dir="${inner#gitdir:}"
+                    block_dir="${block_dir%/}"
+                    in_block=1
+                    ;;
+            esac
+        fi
+    done < "$GITCONFIG"
+}
+
 add_include_if() {
     local dir="$1"
     local profile_file="$2"
@@ -215,10 +259,20 @@ cmd_create() {
     local email="${positional[2]}"
     local base_dir="${positional[3]:-${HOME}/git-profiles/${id}}"
     base_dir="${base_dir%/}"
-    if ! base_dir="$(cd "$base_dir" 2>/dev/null && pwd)"; then
-        echo "Error: base directory '$base_dir' does not exist." >&2
+    # The leaf may not exist yet (mkdir -p below creates it), but the parent
+    # must exist and be a directory. This catches relative paths and typos
+    # without rejecting the common case of creating a new project folder.
+    local parent_dir="${base_dir%/*}"
+    if [ "$parent_dir" = "$base_dir" ]; then
+        # No slash in base_dir — relative path, reject.
+        echo "Error: base directory '$base_dir' is not an absolute path." >&2
         exit 1
     fi
+    if [ ! -d "$parent_dir" ]; then
+        echo "Error: parent directory '$parent_dir' does not exist." >&2
+        exit 1
+    fi
+    base_dir="$(cd "$parent_dir" && pwd)/${base_dir##*/}"
     local key_file="${SSH_DIR}/id_ed25519_git_${id}"
     local profile_file="${PROFILES_DIR}/${id}.gitconfig"
     local conf_file="${PROFILES_DIR}/${id}.conf"
@@ -469,23 +523,26 @@ cmd_current() {
         done
     fi
 
-    for conf in "${PROFILES_DIR}"/*.conf; do
-        [ -f "$conf" ] || continue
-        . "$conf"
-
-        if [ -n "$base_dir" ]; then
-            case "$current_dir" in
-                "$base_dir"|"$base_dir"/*)
-                    echo "Profile that would apply here: $id"
-                    echo "  name:     $name"
-                    echo "  email:    $email"
-                    echo "  base_dir: $base_dir"
-                    echo "  (no git repo detected in this directory)"
-                    return 0
-                    ;;
-            esac
-        fi
-    done
+    # Pass 3: no git repo here — match the current directory against
+    # includeIf blocks in ~/.gitconfig (the source of truth for folder→profile
+    # mapping). base_dir in .conf is only set at create time and can go stale
+    # after use-folder adds or reassigns folders.
+    local matched_profile_file
+    matched_profile_file="$(match_includefile "$current_dir")"
+    if [ -n "$matched_profile_file" ]; then
+        for conf in "${PROFILES_DIR}"/*.conf; do
+            [ -f "$conf" ] || continue
+            . "$conf"
+            if [ "$profile_file" = "$matched_profile_file" ]; then
+                echo "Profile that would apply here: $id"
+                echo "  name:     $name"
+                echo "  email:    $email"
+                echo "  base_dir: ${base_dir:-}"
+                echo "  (no git repo detected in this directory)"
+                return 0
+            fi
+        done
+    fi
 
     echo "No matching profile found for this location."
 }
