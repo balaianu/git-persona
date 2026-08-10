@@ -271,6 +271,33 @@ output=$(run current)
 assert_contains "current in repo shows work" "work" "$output"
 assert_contains "current in repo shows name" "Test Work" "$output"
 
+# --- Use: switching from keyed to keyless profile clears sshCommand ---
+echo "--- Use: keyed→keyless clears sshCommand ---"
+# TEST_REPO currently has work's sshCommand set (from earlier `use work`)
+# Switch to nokey profile — sshCommand must be cleared
+cd "$TEST_REPO"
+run use nokey
+assert_equals "switched to nokey name" "No Key User" "$(git config user.name)"
+assert_equals "switched to nokey email" "nokey@test.com" "$(git config user.email)"
+if git config core.sshCommand >/dev/null 2>&1; then
+    FAIL=$((FAIL + 1))
+    FAILED_TESTS+=("keyed→keyless should clear sshCommand")
+    echo "  FAIL: keyed→keyless should clear sshCommand (got: $(git config core.sshCommand))"
+else
+    PASS=$((PASS + 1))
+    echo "  PASS: keyed→keyless clears sshCommand"
+fi
+# Switch back to work — sshCommand should be set again
+run use work
+if [ -n "$(git config core.sshCommand 2>/dev/null || true)" ]; then
+    PASS=$((PASS + 1))
+    echo "  PASS: keyless→keyed sets sshCommand"
+else
+    FAIL=$((FAIL + 1))
+    FAILED_TESTS+=("keyless→keyed should set sshCommand")
+    echo "  FAIL: keyless→keyed should set sshCommand"
+fi
+
 # --- Current disambiguation: two profiles, same name+email, different keys ---
 echo "--- Current (disambiguation by key) ---"
 # Create a second profile that shares work's name+email but has its own key/dir.

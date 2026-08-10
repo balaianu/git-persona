@@ -345,7 +345,7 @@ EOF
         cat "${key_file}.pub"
         echo ""
     else
-        echo "  SSH key:        (none — use --no-ssh-key was set or key not found)"
+        echo "  SSH key:        (none — --no-ssh-key was set or key not found)"
         echo ""
     fi
     echo "Put repos under $base_dir to automatically use this profile."
@@ -354,11 +354,12 @@ EOF
 cmd_list() {
     init
     local count=0
-    local conf
+    local conf id name email base_dir key_file
 
     echo "Profiles:"
     for conf in "${PROFILES_DIR}"/*.conf; do
         [ -f "$conf" ] || continue
+        id="" name="" email="" base_dir="" key_file=""
         . "$conf"
         echo "  ${id}"
         echo "    name:     ${name}"
@@ -459,6 +460,9 @@ cmd_use() {
     git config user.email "$email"
     if [ -n "$key_file" ] && [ -f "$key_file" ]; then
         git config core.sshCommand "ssh -i ${key_file} -o IdentitiesOnly=yes"
+    else
+        # Clear any previous sshCommand so we don't push with a stale key
+        git config --unset core.sshCommand 2>/dev/null || true
     fi
 
     echo "Profile '$id' applied to current repo."
@@ -515,11 +519,14 @@ cmd_current() {
         ssh_cmd="$(git config core.sshCommand 2>/dev/null || true)"
     fi
 
+    local conf id name email base_dir key_file profile_file
+
     # Pass 1: strongest signal — the SSH key in core.sshCommand uniquely
     # identifies a profile even when several share the same name+email.
     if [ -n "$ssh_cmd" ]; then
         for conf in "${PROFILES_DIR}"/*.conf; do
             [ -f "$conf" ] || continue
+            id="" name="" email="" base_dir="" key_file="" profile_file=""
             . "$conf"
             if [ -n "$key_file" ]; then
                 case "$ssh_cmd" in
@@ -540,6 +547,7 @@ cmd_current() {
     if [ -n "$git_name" ] && [ -n "$git_email" ]; then
         for conf in "${PROFILES_DIR}"/*.conf; do
             [ -f "$conf" ] || continue
+            id="" name="" email="" base_dir="" key_file="" profile_file=""
             . "$conf"
             if [ "$name" = "$git_name" ] && [ "$email" = "$git_email" ]; then
                 echo "Current profile: $id"
@@ -560,6 +568,7 @@ cmd_current() {
     if [ -n "$matched_profile_file" ]; then
         for conf in "${PROFILES_DIR}"/*.conf; do
             [ -f "$conf" ] || continue
+            id="" name="" email="" base_dir="" key_file="" profile_file=""
             . "$conf"
             if [ "$profile_file" = "$matched_profile_file" ]; then
                 echo "Profile that would apply here: $id"
