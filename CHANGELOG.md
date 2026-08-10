@@ -46,5 +46,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - SSH key generation per profile (ed25519)
 - `includeIf` automation for folder-based identity switching
 - Makefile with install, update, uninstall, test targets
-- Test suite (46 tests)
+- Test suite
 - Documentation: README, usage guide, configuration guide, contributing guide

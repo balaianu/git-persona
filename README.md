@@ -321,7 +321,7 @@ Or directly:
 bash tests/test_basic.sh
 ```
 
-The test suite runs in an isolated temp directory and won't touch your real profiles or SSH keys. 70 tests covering all commands, flags, and edge cases.
+The test suite runs in an isolated temp directory and won't touch your real profiles or SSH keys.
 
 ## Changelog
 

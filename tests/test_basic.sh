@@ -439,6 +439,30 @@ echo "--- Delete non-existent ---"
 output=$(run delete nonexistent 2>&1 || true)
 assert_contains "delete non-existent rejected" "not found" "$output"
 
+# --- Invalid profile IDs ---
+echo "--- Invalid profile IDs ---"
+output=$(run create "../etc" "Bad" bad@x.com 2>&1 || true)
+assert_contains "create with path traversal rejected" "invalid" "$output"
+output=$(run create "my profile" "Bad" bad@x.com 2>&1 || true)
+assert_contains "create with space rejected" "invalid" "$output"
+output=$(run create "good;rm" "Bad" bad@x.com 2>&1 || true)
+assert_contains "create with semicolon rejected" "invalid" "$output"
+output=$(run delete "../etc" 2>&1 || true)
+assert_contains "delete with path traversal rejected" "invalid" "$output"
+output=$(run use "../etc" 2>&1 || true)
+assert_contains "use with path traversal rejected" "invalid" "$output"
+output=$(run use-folder "../etc" /tmp 2>&1 || true)
+assert_contains "use-folder with path traversal rejected" "invalid" "$output"
+output=$(run create "" "Bad" bad@x.com 2>&1 || true)
+assert_contains "create with empty id rejected" "invalid" "$output"
+
+# --- Valid profile IDs with hyphens and underscores ---
+echo "--- Valid profile IDs ---"
+output=$(run create "my-profile_1" "Test" test@x.com "$TEST_HOME/testdir" --no-ssh-key 2>&1 || true)
+assert_contains "create with hyphen and underscore accepted" "created" "$output"
+output=$(run delete "my-profile_1" 2>&1 || true)
+assert_contains "delete hyphen-underscore profile" "deleted" "$output"
+
 # --- Use non-existent profile ---
 echo "--- Use non-existent ---"
 output=$(run use nonexistent 2>&1 || true)

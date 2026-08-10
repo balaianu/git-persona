@@ -54,6 +54,14 @@ profile_exists() {
     [ -f "${PROFILES_DIR}/${id}.conf" ]
 }
 
+# Validate profile ID: alphanumeric, hyphens, underscores only.
+# Rejects path traversal, spaces, and shell metacharacters.
+valid_id() {
+    local id="$1"
+    [ -n "$id" ] || return 1
+    [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]]
+}
+
 # Escape a value for safe embedding inside double quotes in a bash-sourceable
 # conf file. Inside double quotes bash expands $ and ` and \ and ", so all
 # four must be escaped. Backslash first (it escapes the others), then the
@@ -258,6 +266,11 @@ cmd_create() {
     local name="${positional[1]}"
     local email="${positional[2]}"
     local base_dir="${positional[3]:-${HOME}/git-profiles/${id}}"
+
+    if ! valid_id "$id"; then
+        echo "Error: profile ID '$id' is invalid. Use only letters, numbers, hyphens, and underscores." >&2
+        exit 1
+    fi
     base_dir="${base_dir%/}"
     # The leaf may not exist yet (mkdir -p below creates it), but the parent
     # must exist and be a directory. This catches relative paths and typos
@@ -382,6 +395,11 @@ cmd_delete() {
         exit 1
     fi
 
+    if ! valid_id "$id"; then
+        echo "Error: profile ID '$id' is invalid." >&2
+        exit 1
+    fi
+
     init
 
     if ! profile_exists "$id"; then
@@ -417,6 +435,11 @@ cmd_use() {
     local id="$1"
     init
 
+    if ! valid_id "$id"; then
+        echo "Error: profile ID '$id' is invalid." >&2
+        exit 1
+    fi
+
     if ! profile_exists "$id"; then
         echo "Profile '$id' not found."
         exit 1
@@ -450,6 +473,11 @@ cmd_use_folder() {
     local id="$1"
     local folder="$2"
     init
+
+    if ! valid_id "$id"; then
+        echo "Error: profile ID '$id' is invalid." >&2
+        exit 1
+    fi
 
     if ! profile_exists "$id"; then
         echo "Profile '$id' not found."
