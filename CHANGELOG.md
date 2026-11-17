@@ -5,6 +5,18 @@ All notable changes to git-persona are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.4] - 2026-11-17
+
+### Fixed
+- `use-folder` and `create` no longer leave a stale second `path` in an `includeIf` section. Git applies every path and the last one wins, so the first path now points at the new profile and later ones are dropped.
+- `includeIf` section names are matched case-insensitively (`[INCLUDEIF ...]`), and headers with extra interior spaces are deduped.
+- `path` values are read the way git reads them: double quotes are removed and unquoted values end at `#` or `;`. Paths that contain `;`, `#`, quotes or backslashes (for example in `$HOME`) are written quoted so git resolves them correctly.
+- Whitespace-only lines at the end of a removed block count as separators.
+- `list` warns about unreadable or malformed confs and no longer prints empty entries; `current` skips them.
+- `current` derives the profile path from the filename instead of trusting the conf.
+- `delete` unlinks the `includeIf` block before it removes the key, matching its own comment.
+- An unreadable conf shows only the friendly error.
+
 ## [1.4.3] - 2026-11-17
 
 ### Security

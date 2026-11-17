@@ -120,7 +120,7 @@ bash -n "$SCRIPT" && PASS=$((PASS + 1)) && echo "  PASS: bash syntax check" || {
 # --- Version ---
 echo "--- Version ---"
 output=$(run version)
-assert_equals "version output" "git-persona 1.4.3" "$output"
+assert_equals "version output" "git-persona 1.4.4" "$output"
 
 # --- Release metadata ---
 # Fails the PR that bumps VERSION without writing a changelog entry, so the
@@ -870,6 +870,88 @@ if cmp -s "$H/original" "$H/.gitconfig"; then
 else
     FAIL=$((FAIL + 1)); FAILED_TESTS+=("CRLF gitconfig untouched"); echo "  FAIL: CRLF gitconfig untouched"
 fi
+
+# --- Multiple paths, header casing, value normalisation ---
+echo "--- includeIf semantics matching git ---"
+H=$(new_home gitsem)
+run_home "$H" create w "W" w@test.com "$H/w" --no-ssh-key >/dev/null 2>&1
+run_home "$H" create o "O" o@test.com "$H/o" --no-ssh-key >/dev/null 2>&1
+PW="$H/.config/git-persona/profiles/w.gitconfig"
+PO="$H/.config/git-persona/profiles/o.gitconfig"
+mkdir -p "$H/x"
+
+# Git applies every path in a section and the last wins, so a stale second
+# path would override the one use-folder just wrote.
+printf '[includeIf "gitdir:%s/x/"]\n    path = %s\n    path = %s/stale.gitconfig\n' "$H" "$PO" "$H" > "$H/.gitconfig"
+run_home "$H" use-folder w "$H/x" >/dev/null 2>&1
+content="$(cat "$H/.gitconfig")"
+assert_contains "use-folder points the section at the new profile" "$PW" "$content"
+assert_not_contains "stale later path is dropped" "stale.gitconfig" "$content"
+assert_not_contains "old first path is replaced" "o.gitconfig" "$content"
+cd "$H/x"
+git init -q
+assert_equals "git resolves the new identity" "W" "$(HOME="$H" git config user.name)"
+cd "$TEST_HOME"
+
+# Section names are case-insensitive in git.
+printf '[INCLUDEIF "gitdir:%s/w/"]\n    path = %s\n' "$H" "$PW" > "$H/.gitconfig"
+cd "$H/w"
+output=$(run_home "$H" current)
+assert_contains "current sees an upper-case header" "Profile that would apply here: w" "$output"
+cd "$TEST_HOME"
+run_home "$H" use-folder w "$H/w" >/dev/null 2>&1
+assert_equals "no duplicate block next to an upper-case header" "1" "$(grep -ic 'includeif' "$H/.gitconfig")"
+run_home "$H" delete w >/dev/null 2>&1
+assert_not_contains "upper-case header block removed" "w.gitconfig" "$(cat "$H/.gitconfig")"
+
+# Quoted and commented values are read the way git reads them.
+run_home "$H" create w "W" w@test.com "$H/w" --no-ssh-key >/dev/null 2>&1
+printf '[includeIf "gitdir:%s/w/"]\n    path = "%s" # note\n' "$H" "$PW" > "$H/.gitconfig"
+run_home "$H" delete w >/dev/null 2>&1
+assert_not_contains "quoted, commented path removed" "w.gitconfig" "$(cat "$H/.gitconfig")"
+
+# Extra spaces inside the header still dedup.
+printf '[includeIf  "gitdir:%s/o/"]\n    path = %s\n' "$H" "$PO" > "$H/.gitconfig"
+run_home "$H" use-folder o "$H/o" >/dev/null 2>&1
+assert_equals "header with extra spaces is deduped" "1" "$(grep -c 'gitdir:' "$H/.gitconfig")"
+
+# Whitespace-only trailing lines count as separators.
+printf '[user]\n    name = X\n\n[includeIf "gitdir:%s/o/"]\n    path = %s\n  \n[alias]\n    co = checkout\n' "$H" "$PO" > "$H/.gitconfig"
+printf '[user]\n    name = X\n\n[alias]\n    co = checkout\n' > "$H/expected"
+run_home "$H" delete o >/dev/null 2>&1
+if cmp -s "$H/expected" "$H/.gitconfig"; then
+    PASS=$((PASS + 1)); echo "  PASS: whitespace-only separator handled"
+else
+    FAIL=$((FAIL + 1)); FAILED_TESTS+=("whitespace-only separator"); echo "  FAIL: whitespace-only separator"
+    diff "$H/expected" "$H/.gitconfig" || true
+fi
+
+# A HOME containing ; and # must round-trip through git's own parser.
+echo "--- Path quoting round trip ---"
+H=$(new_home 'semi;colon#hash')
+run_home "$H" create q "Quoted" q@test.com "$H/q" --no-ssh-key >/dev/null 2>&1
+mkdir -p "$H/q/repo"
+cd "$H/q/repo"
+git init -q
+assert_equals "git follows a ;/# path in includeIf" "Quoted" "$(HOME="$H" git config user.name)"
+cd "$TEST_HOME"
+run_home "$H" delete q >/dev/null 2>&1
+assert_not_contains "quoted path block removed again" "q.gitconfig" "$(cat "$H/.gitconfig")"
+
+# --- Malformed confs and untrusted profile_file in current ---
+echo "--- Malformed confs ---"
+H=$(new_home malformed)
+run_home "$H" create ok "Ok" ok@test.com "$H/ok" --no-ssh-key >/dev/null 2>&1
+: > "$H/.config/git-persona/profiles/empty.conf"
+output=$(run_home "$H" list 2>&1)
+assert_contains "list warns about an empty conf" "skipping unreadable or malformed" "$output"
+assert_equals "no phantom entry for the empty conf" "1" "$(printf '%s\n' "$output" | grep -c 'name:')"
+conf="$H/.config/git-persona/profiles/ok.conf"
+printf '%s\n' 'id="ok"' 'name="Ok"' 'email="ok@test.com"' "base_dir=\"$H/ok\"" 'profile_file="/bogus/path.gitconfig"' > "$conf"
+cd "$H/ok"
+output=$(run_home "$H" current)
+assert_contains "current ignores a bogus profile_file in the conf" "Profile that would apply here: ok" "$output"
+cd "$TEST_HOME"
 
 # --- Cleanup ---
 echo "--- Cleanup ---"

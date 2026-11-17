@@ -26,6 +26,8 @@ profile_file="/home/user/.config/git-persona/profiles/work.gitconfig"
 key_owned="1"
 ```
 
+`profile_file` is informational. `git-persona` always uses `<id>.gitconfig` next to the conf and ignores any other value with a warning.
+
 `key_file` is empty for profiles created with `--no-ssh-key`. `key_owned` is `1` when `git-persona` generated the key and `0` when it reused a key that already existed; `delete --with-keys` only removes keys recorded with `key_owned="1"` (profiles created before 1.4.0 have no such field, so their key is kept and you remove it by hand), and only under `~/.ssh` with the `id_ed25519_git_` prefix.
 
 ### Profile configs
@@ -69,7 +71,7 @@ Keys are named with a `git_` prefix to distinguish them from other SSH keys.
 ~/.gitconfig
 ```
 
-If `~/.gitconfig` is a symlink (for example managed by a dotfiles tool), edits are written through the link and the link is kept. Before each change the previous content is saved to `~/.config/git-persona/gitconfig.bak`. Only the `includeIf` blocks that `git-persona` manages are added or removed; the rest of the file is left as it was.
+If `~/.gitconfig` is a symlink (for example managed by a dotfiles tool), edits are written through the link and the link is kept. Before each change the previous content is saved to `~/.config/git-persona/gitconfig.bak`. Section names, key spacing and quoting are read the way git reads them, so hand-edited blocks are found. Only the `includeIf` blocks that `git-persona` manages are added or removed; the rest of the file is left as it was.
 
 `git-persona` adds `includeIf` blocks to this file:
 
