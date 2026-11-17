@@ -2,13 +2,13 @@
 
 # git-persona: manage multiple git identities with SSH keys and includeIf
 # Usage: git-persona <command> [args]
-# Version: 1.4.7
+# Version: 1.4.8
 # License: MIT
 # Dependencies: bash 3.2+, git 2.13+, openssh (ssh-keygen)
 
 set -euo pipefail
 
-VERSION="1.4.7"
+VERSION="1.4.8"
 
 : "${HOME:?HOME is not set}"
 
@@ -26,7 +26,11 @@ INCLUDE_REASSIGNED=0
 P_id="" P_name="" P_email="" P_base_dir="" P_key_file="" P_profile_file="" P_key_owned=""
 # The id written inside the conf; P_id itself is the filename id after load_profile.
 P_conf_id=""
+# Outputs of the small parsers below.
+PATH_VALUE=""
 INCLUDEIF_COND=""
+GD_DIR=""
+GD_ICASE=0
 
 trap '[ -z "$TMP_FILE" ] || rm -f "$TMP_FILE"' EXIT
 
@@ -148,7 +152,7 @@ load_conf() {
     data="$(cat "$conf" 2>/dev/null)" || return 1
     data="${data//$cr/$nl}"
 
-    while IFS= read -r line || [ -n "$line" ]; do
+    while IFS= read -r line; do
         if [[ "$line" =~ $re ]]; then
             key="${BASH_REMATCH[1]}"
             val="$(unescape_value "${BASH_REMATCH[2]}")"
@@ -342,17 +346,18 @@ parse_path_line() {
     done
 
     case "$out" in
+        "~") out="$HOME" ;;
         "~/"*) out="${HOME}/${out#\~/}" ;;
-        "~"?*/*)
-            # ~user/: the name must look like a login name (so ~-, ~+ and ~0,
-            # which bash treats specially, never reach eval), and eval only
-            # ever sees characters that are valid in one.
+        "~"?*)
+            # ~user and ~user/...: the name must look like a login name (so ~-,
+            # ~+ and ~0, which bash treats specially, never reach eval), and
+            # eval only ever sees characters that are valid in one.
             tu="${out%%/*}"
             tu="${tu#\~}"
             if [[ "$tu" =~ ^[A-Za-z_][A-Za-z0-9._-]*$ ]]; then
                 th="$(eval "printf '%s' ~$tu" 2>/dev/null)" || th=""
                 case "$th" in
-                    /*) out="${th}/${out#*/}" ;;
+                    /*) out="${th}${out#"~$tu"}" ;;
                 esac
             fi
             ;;
@@ -388,25 +393,33 @@ is_persona_path() {
     [[ "$rest" =~ ^[A-Za-z0-9_-]+$ ]]
 }
 
-# True when an includeIf header line targets dir. Understands gitdir: and
-# gitdir/i:, a leading ~/ and a leading ./ (relative to ~/.gitconfig).
-header_targets_dir() {
-    local inner dir="$2" kind=s
-    includeif_condition "$1" || return 1
-    inner="$INCLUDEIF_COND"
-    case "$inner" in
-        gitdir:*) inner="${inner#gitdir:}" ;;
-        gitdir/i:*) inner="${inner#gitdir/i:}"; kind=i ;;
+# Split an includeIf condition into GD_DIR and GD_ICASE for gitdir: and
+# gitdir/i:, expanding a leading ~/ and ./ (relative to ~/.gitconfig). Fails
+# for every other condition.
+parse_gitdir_condition() {
+    local c="$1"
+    GD_ICASE=0
+    case "$c" in
+        gitdir:*) c="${c#gitdir:}" ;;
+        gitdir/i:*) c="${c#gitdir/i:}"; GD_ICASE=1 ;;
         *) return 1 ;;
     esac
-    case "$inner" in
-        "~/"*) inner="${HOME}/${inner#\~/}" ;;
-        "./"*) inner="$(dirname "$GITCONFIG")/${inner#./}" ;;
+    case "$c" in
+        "~/"*) c="${HOME}/${c#\~/}" ;;
+        "./"*) c="$(dirname "$GITCONFIG")/${c#./}" ;;
     esac
-    if [ "$kind" = i ]; then
-        [ "$(lowercase "$inner")" = "$(lowercase "${dir}/")" ]
+    GD_DIR="$c"
+}
+
+# True when an includeIf header line targets dir, as a pattern that ends in a
+# slash (git then matches everything below it).
+header_targets_dir() {
+    includeif_condition "$1" || return 1
+    parse_gitdir_condition "$INCLUDEIF_COND" || return 1
+    if [ "$GD_ICASE" = 1 ]; then
+        [ "$(lowercase "$GD_DIR")" = "$(lowercase "${2}/")" ]
     else
-        [ "$inner" = "${dir}/" ]
+        [ "$GD_DIR" = "${2}/" ]
     fi
 }
 
@@ -415,13 +428,29 @@ is_section_start() {
     [ "${t:0:1}" = "[" ]
 }
 
-# Set INCLUDEIF_COND to the quoted condition of an includeIf header line.
-# Fails for every other line, including comments and values that merely
-# contain a quoted string.
+# Unescape a gitconfig subsection name: \\ and \" stand for themselves and any
+# other \c is c.
+unescape_subsection() {
+    local rest="$1" out="" c
+    while [ -n "$rest" ]; do
+        c="${rest:0:1}"
+        rest="${rest:1}"
+        if [ "$c" = '\' ]; then
+            c="${rest:0:1}"
+            rest="${rest:1}"
+        fi
+        out="${out}${c}"
+    done
+    INCLUDEIF_COND="$out"
+}
+
+# Set INCLUDEIF_COND to the condition of an includeIf header line. Fails for
+# every other line, including comments and values that merely contain a
+# quoted string.
 includeif_condition() {
-    local re='^[[:space:]]*\[[iI][nN][cC][lL][uU][dD][eE][iI][fF][[:space:]]+"([^"]*)"[[:space:]]*\]'
+    local re='^[[:space:]]*\[[iI][nN][cC][lL][uU][dD][eE][iI][fF][[:space:]]+"(([^"\\]|\\.)*)"[[:space:]]*\]'
     [[ "$1" =~ $re ]] || return 1
-    INCLUDEIF_COND="${BASH_REMATCH[1]}"
+    unescape_subsection "${BASH_REMATCH[1]}"
 }
 
 is_includeif_header() {
@@ -440,7 +469,7 @@ match_includefile() {
 
     local in_block=0 icase=0
     local block_dir="" block_phys="" result=""
-    local line inner cur blk
+    local line cur blk
     local cr=$'\r'
 
     while IFS= read -r line || [ -n "$line" ]; do
@@ -449,18 +478,9 @@ match_includefile() {
         if is_includeif_header "$line"; then
             in_block=0
             includeif_condition "$line" || continue
-            inner="$INCLUDEIF_COND"
-            icase=0
-            case "$inner" in
-                gitdir:*) block_dir="${inner#gitdir:}" ;;
-                gitdir/i:*) block_dir="${inner#gitdir/i:}"; icase=1 ;;
-                *) continue ;;
-            esac
-            block_dir="${block_dir%/}"
-            case "$block_dir" in
-                "~/"*) block_dir="${HOME}/${block_dir#\~/}" ;;
-                "./"*) block_dir="$(dirname "$GITCONFIG")/${block_dir#./}" ;;
-            esac
+            parse_gitdir_condition "$INCLUDEIF_COND" || continue
+            icase="$GD_ICASE"
+            block_dir="${GD_DIR%/}"
             block_phys=""
             if [ -d "$block_dir" ]; then
                 block_phys="$(cd "$block_dir" && pwd -P)" || block_phys=""
@@ -507,7 +527,7 @@ finish_target() {
 
     if [ -n "$sec_buf" ]; then
         body="${sec_buf%"$nl"}"
-        while IFS= read -r line || [ -n "$line" ]; do
+        while IFS= read -r line; do
             if parse_path_line "$line"; then
                 last_ours=0
                 if [ "$PATH_VALUE" = "$profile_file" ]; then
@@ -620,7 +640,8 @@ flush_blanks() {
 # Write out (or drop) the buffered includeIf block. A block is dropped when
 # its only path is profile_file; a block that also has other paths just loses
 # our line. Blank lines at the end of a dropped block are the separator before
-# the next section and are kept.
+# the next section and are kept. Uses block_buf and saved_header from
+# remove_include_if and the shared _blanks counter.
 finish_block() {
     local profile_file="$1"
     local nl=$'\n'
@@ -629,7 +650,7 @@ finish_block() {
 
     if [ -n "$block_buf" ]; then
         body="${block_buf%"$nl"}"
-        while IFS= read -r line || [ -n "$line" ]; do
+        while IFS= read -r line; do
             if parse_path_line "$line"; then
                 if [ "$PATH_VALUE" = "$profile_file" ]; then
                     ours=1
@@ -948,13 +969,8 @@ cmd_delete() {
 
     # Unlink from ~/.gitconfig first so a failure there leaves the profile
     # intact instead of a dangling includeIf.
-    if [ -n "$profile_file" ]; then
-        remove_include_if "$profile_file"
-    fi
-    case "$profile_file" in
-        "${PROFILES_DIR}"/*) rm -f "$profile_file" ;;
-    esac
-    rm -f "${PROFILES_DIR}/${id}.conf"
+    remove_include_if "$profile_file"
+    rm -f "$profile_file" "${PROFILES_DIR}/${id}.conf"
 
     if [ "$damaged" = 1 ]; then
         err "Warning: the conf of '$id' is damaged (it has no id). Its profile files were removed; any SSH key was not touched."
@@ -1137,38 +1153,45 @@ cmd_current() {
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
-case "${1:-}" in
-    create)
-        shift
-        cmd_create "$@"
-        ;;
-    list)
-        cmd_list
-        ;;
-    delete)
-        shift
-        cmd_delete "$@"
-        ;;
-    use)
-        shift
-        cmd_use "$@"
-        ;;
-    use-folder)
-        shift
-        cmd_use_folder "$@"
-        ;;
-    current)
-        cmd_current
-        ;;
-    version | --version | -v)
-        echo "git-persona $VERSION"
-        ;;
-    help | --help | -h | "")
-        usage
-        ;;
-    *)
-        err "Unknown command: $1"
-        usage >&2
-        exit 1
-        ;;
-esac
+main() {
+    case "${1:-}" in
+        create)
+            shift
+            cmd_create "$@"
+            ;;
+        list)
+            cmd_list
+            ;;
+        delete)
+            shift
+            cmd_delete "$@"
+            ;;
+        use)
+            shift
+            cmd_use "$@"
+            ;;
+        use-folder)
+            shift
+            cmd_use_folder "$@"
+            ;;
+        current)
+            cmd_current
+            ;;
+        version | --version | -v)
+            echo "git-persona $VERSION"
+            ;;
+        help | --help | -h | "")
+            usage
+            ;;
+        *)
+            err "Unknown command: $1"
+            usage >&2
+            exit 1
+            ;;
+    esac
+}
+
+# Source-able for tests: only dispatch when executed directly.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    main "$@"
+fi

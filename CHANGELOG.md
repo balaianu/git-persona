@@ -5,6 +5,16 @@ All notable changes to git-persona are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.8] - 2026-11-17
+
+### Fixed
+- `includeIf` conditions with escaped quotes or backslashes (`[includeIf "gitdir:/d\"x/"]`) are parsed the way git parses them, so `current` and the section scans no longer miss them.
+- A bare `~user` and a bare `~` in a `path` value are expanded like git does.
+
+### Changed
+- The gitdir condition parsing shared by `current` and the section scans lives in one helper, and `delete` no longer carries two checks that could never fail.
+- The script only dispatches when executed directly, so the tests can source it and exercise the parsers on their own. New unit tests cover escape decoding, quote toggling, `~` forms and header conditions.
+
 ## [1.4.7] - 2026-11-17
 
 ### Fixed

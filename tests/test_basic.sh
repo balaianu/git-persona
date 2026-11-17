@@ -120,7 +120,7 @@ bash -n "$SCRIPT" && PASS=$((PASS + 1)) && echo "  PASS: bash syntax check" || {
 # --- Version ---
 echo "--- Version ---"
 output=$(run version)
-assert_equals "version output" "git-persona 1.4.7" "$output"
+assert_equals "version output" "git-persona 1.4.8" "$output"
 
 # --- Release metadata ---
 # Fails the PR that bumps VERSION without writing a changelog entry, so the
@@ -1125,6 +1125,49 @@ output=$(run_home "$H" delete ya --with-keys 2>&1)
 assert_file_exists "key of a differently-named id is kept" "$H/.ssh/id_ed25519_git_xa"
 assert_contains "refusal says which key the profile owns" "id_ed25519_git_ya" "$output"
 assert_contains "profile is still deleted" "Profile 'ya' deleted" "$output"
+
+# --- Parser unit tests (the script is source-able) ---
+echo "--- parse_path_line / includeif_condition ---"
+H=$(new_home units)
+parse() { HOME="$H" bash -c 'source "$1"; parse_path_line "$2" && printf "%s" "$PATH_VALUE"' _ "$SCRIPT" "$1"; }
+cond() { HOME="$H" bash -c 'source "$1"; includeif_condition "$2" && printf "%s" "$INCLUDEIF_COND"' _ "$SCRIPT" "$1"; }
+ROOT_HOME="$(eval echo ~root)"
+
+assert_equals "bare ~ is HOME" "$H" "$(parse 'path = ~')"
+assert_equals "~/x is under HOME" "$H/x" "$(parse 'path = ~/x')"
+if [ "$ROOT_HOME" != "~root" ]; then
+    assert_equals "bare ~user expands" "$ROOT_HOME" "$(parse 'path = ~root')"
+    assert_equals "~user/rest expands" "$ROOT_HOME/y" "$(parse 'path = ~root/y')"
+fi
+assert_equals "digit-leading name stays literal" "~0abc" "$(parse 'path = ~0abc')"
+assert_equals "~- stays literal" "~-/z" "$(parse 'path = ~-/z')"
+assert_equals "\\t decodes to a tab" "a"$'\t'"b" "$(parse 'path = "a\tb"')"
+assert_equals "\\b decodes to backspace" "a"$'\b'"b" "$(parse 'path = "a\bb"')"
+assert_equals "\\n decodes to a newline" "a"$'\n'"b" "$(parse 'path = "a\nb"')"
+assert_equals "quotes toggle" "ab" "$(parse 'path = "a"b # c')"
+assert_equals "comment ends an unquoted value" "/p" "$(parse 'path = /p ; note')"
+assert_equals "quoted trailing space is kept" "/p " "$(parse 'path = "/p "')"
+assert_equals "escaped quote in a condition" 'gitdir:/d"x/' "$(cond '[includeIf "gitdir:/d\"x/"]')"
+assert_equals "escaped backslash in a condition" 'gitdir:/d\x/' "$(cond '[includeIf "gitdir:/d\\x/"]')"
+if cond '#[includeIf "gitdir:/d/"]' >/dev/null; then
+    FAIL=$((FAIL + 1)); FAILED_TESTS+=("comment parsed as header"); echo "  FAIL: comment parsed as header"
+else
+    PASS=$((PASS + 1)); echo "  PASS: commented header is not a header"
+fi
+
+# --- current sees a hand-written header whose directory contains a quote ---
+echo "--- Escaped quote in a header ---"
+H=$(new_home quote)
+run_home "$H" create qp "Qp" qp@test.com "$H/qp" --no-ssh-key >/dev/null 2>&1
+mkdir -p "$H/q\"x"
+printf '[includeIf "gitdir:%s/q\\"x/"]\n    path = %s/.config/git-persona/profiles/qp.gitconfig\n' "$H" "$H" > "$H/.gitconfig"
+cd "$H/q\"x"
+output=$(run_home "$H" current)
+assert_contains "current matches a header with an escaped quote" "Profile that would apply here: qp" "$output"
+cd "$TEST_HOME"
+mkdir -p "$H/plain"
+run_home "$H" use-folder qp "$H/plain" >/dev/null 2>&1
+assert_equals "use-folder leaves the escaped-quote block alone" "2" "$(grep -c 'includeIf' "$H/.gitconfig")"
 
 # --- Cleanup ---
 echo "--- Cleanup ---"
