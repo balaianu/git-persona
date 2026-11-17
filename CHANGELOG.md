@@ -5,6 +5,15 @@ All notable changes to git-persona are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.5] - 2026-11-17
+
+### Fixed
+- `use-folder` and `create` no longer delete hand-added `path` lines from an existing `includeIf` section. Git applies every path and later files only override the keys they define, so layered include files are kept. Paths of git-persona profiles are replaced by a single path of ours, placed last so the profile's identity keys win, and a correct section is left byte-identical.
+- A matching section without a `path` gets its path inside that section instead of a duplicate section.
+- `path` values follow git's rules: quotes toggle (`"a"b` is `ab`), unquoted `#` or `;` starts a comment, trailing unquoted whitespace is dropped, and a leading `~/` means `$HOME`. `gitdir:~/...` headers dedup against absolute ones.
+- `use` and `delete` reject a conf that parsed to nothing instead of writing empty values.
+- `current` labels the profile it found by its filename, like the rest of the derived paths.
+
 ## [1.4.4] - 2026-11-17
 
 ### Fixed

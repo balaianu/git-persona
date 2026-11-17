@@ -120,7 +120,7 @@ bash -n "$SCRIPT" && PASS=$((PASS + 1)) && echo "  PASS: bash syntax check" || {
 # --- Version ---
 echo "--- Version ---"
 output=$(run version)
-assert_equals "version output" "git-persona 1.4.4" "$output"
+assert_equals "version output" "git-persona 1.4.5" "$output"
 
 # --- Release metadata ---
 # Fails the PR that bumps VERSION without writing a changelog entry, so the
@@ -880,18 +880,51 @@ PW="$H/.config/git-persona/profiles/w.gitconfig"
 PO="$H/.config/git-persona/profiles/o.gitconfig"
 mkdir -p "$H/x"
 
-# Git applies every path in a section and the last wins, so a stale second
-# path would override the one use-folder just wrote.
-printf '[includeIf "gitdir:%s/x/"]\n    path = %s\n    path = %s/stale.gitconfig\n' "$H" "$PO" "$H" > "$H/.gitconfig"
-run_home "$H" use-folder w "$H/x" >/dev/null 2>&1
+# Another profile's path is replaced by ours; a hand-added path is kept.
+printf '[includeIf "gitdir:%s/x/"]\n    path = %s\n    path = %s/hand.inc\n' "$H" "$PO" "$H" > "$H/.gitconfig"
+printf '[alias]\n    zz = status\n' > "$H/hand.inc"
+output=$(run_home "$H" use-folder w "$H/x" 2>&1)
 content="$(cat "$H/.gitconfig")"
-assert_contains "use-folder points the section at the new profile" "$PW" "$content"
-assert_not_contains "stale later path is dropped" "stale.gitconfig" "$content"
-assert_not_contains "old first path is replaced" "o.gitconfig" "$content"
+assert_contains "use-folder reports replacing another profile" "previously assigned" "$output"
+assert_not_contains "other profile's path replaced" "o.gitconfig" "$content"
+assert_contains "hand-added path is preserved" "hand.inc" "$content"
 cd "$H/x"
 git init -q
 assert_equals "git resolves the new identity" "W" "$(HOME="$H" git config user.name)"
+assert_equals "hand-added file still applies" "status" "$(HOME="$H" git config alias.zz)"
 cd "$TEST_HOME"
+
+# Layered hand-added paths survive and ours goes last so identity wins.
+printf '[user]\n    name = Layer1\n    email = l1@test.com\n' > "$H/layer1.inc"
+printf '[user]\n    name = Layer2\n' > "$H/layer2.inc"
+printf '[includeIf "gitdir:%s/x/"]\n    path = %s/layer1.inc\n    path = %s/layer2.inc\n' "$H" "$H" "$H" > "$H/.gitconfig"
+run_home "$H" use-folder w "$H/x" >/dev/null 2>&1
+content="$(cat "$H/.gitconfig")"
+assert_contains "first layered path kept" "layer1.inc" "$content"
+assert_contains "second layered path kept" "layer2.inc" "$content"
+cd "$H/x"
+assert_equals "profile identity wins over layered files" "W" "$(HOME="$H" git config user.name)"
+assert_equals "profile email wins too" "w@test.com" "$(HOME="$H" git config user.email)"
+cd "$TEST_HOME"
+cp "$H/.gitconfig" "$H/before"
+run_home "$H" use-folder w "$H/x" >/dev/null 2>&1
+if cmp -s "$H/before" "$H/.gitconfig"; then
+    PASS=$((PASS + 1)); echo "  PASS: use-folder is idempotent on a correct section"
+else
+    FAIL=$((FAIL + 1)); FAILED_TESTS+=("use-folder idempotent"); echo "  FAIL: use-folder is idempotent on a correct section"
+fi
+
+# A pathless section gets its path inside it, not a duplicate section.
+printf '[includeIf "gitdir:%s/x/"]\n[alias]\n    keep = me\n' "$H" > "$H/.gitconfig"
+run_home "$H" use-folder w "$H/x" >/dev/null 2>&1
+assert_equals "pathless section reused" "1" "$(grep -c 'includeIf' "$H/.gitconfig")"
+assert_contains "path added to the pathless section" "$PW" "$(cat "$H/.gitconfig")"
+assert_contains "following section untouched" "keep = me" "$(cat "$H/.gitconfig")"
+
+# Values are read the way git reads them: quotes toggle, ~/ is $HOME.
+printf '[includeIf "gitdir:~/w/"]\n    path = ~/.config/git-persona/profiles/w.gitconfig\n' > "$H/.gitconfig"
+run_home "$H" use-folder w "$H/w" >/dev/null 2>&1
+assert_equals "~/ header and path dedup against absolute ones" "1" "$(grep -c 'gitdir:' "$H/.gitconfig")"
 
 # Section names are case-insensitive in git.
 printf '[INCLUDEIF "gitdir:%s/w/"]\n    path = %s\n' "$H" "$PW" > "$H/.gitconfig"
@@ -909,6 +942,12 @@ run_home "$H" create w "W" w@test.com "$H/w" --no-ssh-key >/dev/null 2>&1
 printf '[includeIf "gitdir:%s/w/"]\n    path = "%s" # note\n' "$H" "$PW" > "$H/.gitconfig"
 run_home "$H" delete w >/dev/null 2>&1
 assert_not_contains "quoted, commented path removed" "w.gitconfig" "$(cat "$H/.gitconfig")"
+
+# Quotes toggle in git, so "a"b is ab.
+run_home "$H" create w "W" w@test.com "$H/w" --no-ssh-key >/dev/null 2>&1
+printf '[includeIf "gitdir:%s/w/"]\n    path = "%s"g\n' "$H" "${PW%g}" > "$H/.gitconfig"
+run_home "$H" delete w >/dev/null 2>&1
+assert_not_contains "partially quoted path removed" "w.gitconf" "$(cat "$H/.gitconfig")"
 
 # Extra spaces inside the header still dedup.
 printf '[includeIf  "gitdir:%s/o/"]\n    path = %s\n' "$H" "$PO" > "$H/.gitconfig"

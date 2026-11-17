@@ -98,6 +98,8 @@ git persona use-folder <id> <folder>
 
 Any git repo under the specified folder will automatically use this profile.
 
+If the folder already has an `includeIf` section, `path` lines you added by hand are kept (git applies all of them). Other git-persona profiles' paths are replaced, and this profile's path is placed last so its name, email and SSH key take precedence.
+
 Example:
 
 ```bash

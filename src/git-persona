@@ -2,13 +2,13 @@
 
 # git-persona: manage multiple git identities with SSH keys and includeIf
 # Usage: git-persona <command> [args]
-# Version: 1.4.4
+# Version: 1.4.5
 # License: MIT
 # Dependencies: bash 3.2+, git 2.13+, openssh (ssh-keygen)
 
 set -euo pipefail
 
-VERSION="1.4.4"
+VERSION="1.4.5"
 
 : "${HOME:?HOME is not set}"
 
@@ -173,7 +173,7 @@ load_conf_valid() {
 
 load_profile() {
     local derived="${PROFILES_DIR}/${1}.gitconfig"
-    load_conf "${PROFILES_DIR}/${1}.conf" || return 1
+    load_conf_valid "${PROFILES_DIR}/${1}.conf" || return 1
     if [ -n "$P_profile_file" ] && [ "$P_profile_file" != "$derived" ]; then
         err "Warning: ignoring unexpected profile_file in ${1}.conf; using $derived"
     fi
@@ -279,32 +279,49 @@ lowercase() {
 }
 
 # Parse a "path" line the way git reads it: any spacing around "=", any key
-# casing, optional double quotes, and unquoted values end at "#" or ";".
+# casing, double quotes that toggle (so "a"b is ab), "#" or ";" starting a
+# comment outside quotes, and a leading "~/" meaning $HOME.
 parse_path_line() {
     local re='^[[:space:]]*[Pp][Aa][Tt][Hh][[:space:]]*=[[:space:]]*(.*)$'
-    local v rest out="" c
+    local rest out="" c last
+    local inq=0 keep=0
     [[ "$1" =~ $re ]] || return 1
-    v="${BASH_REMATCH[1]}"
+    rest="${BASH_REMATCH[1]}"
 
-    if [ "${v:0:1}" = '"' ]; then
-        rest="${v:1}"
-        while [ -n "$rest" ]; do
-            c="${rest:0:1}"
+    while [ -n "$rest" ]; do
+        c="${rest:0:1}"
+        rest="${rest:1}"
+        if [ "$c" = '\' ]; then
+            out="${out}${rest:0:1}"
             rest="${rest:1}"
-            case "$c" in
-                \\)
-                    out="${out}${rest:0:1}"
-                    rest="${rest:1}"
-                    ;;
-                '"') break ;;
-                *) out="${out}${c}" ;;
-            esac
-        done
-        PATH_VALUE="$out"
-    else
-        v="${v%%[#;]*}"
-        PATH_VALUE="${v%"${v##*[![:space:]]}"}"
-    fi
+            keep=${#out}
+            continue
+        elif [ "$c" = '"' ]; then
+            inq=$((1 - inq))
+            keep=${#out}
+            continue
+        elif [ "$inq" = 0 ] && { [ "$c" = '#' ] || [ "$c" = ';' ]; }; then
+            break
+        fi
+        out="${out}${c}"
+        if [ "$inq" = 1 ]; then
+            keep=${#out}
+        fi
+    done
+
+    # Unquoted trailing whitespace is not part of the value.
+    while [ "${#out}" -gt "$keep" ]; do
+        last="${out: -1}"
+        case "$last" in
+            [[:space:]]) out="${out%?}" ;;
+            *) break ;;
+        esac
+    done
+
+    case "$out" in
+        "~/"*) out="${HOME}/${out#\~/}" ;;
+    esac
+    PATH_VALUE="$out"
     return 0
 }
 
@@ -319,6 +336,15 @@ format_path_value() {
             ;;
         *) printf '%s' "$v" ;;
     esac
+}
+
+# True for a gitconfig that git-persona manages, as opposed to one the user
+# added by hand.
+is_persona_path() {
+    case "$1" in
+        "${PROFILES_DIR}"/*.gitconfig) return 0 ;;
+    esac
+    return 1
 }
 
 is_section_start() {
@@ -394,6 +420,55 @@ match_includefile() {
     printf '%s' "$result"
 }
 
+# Finish the buffered section of the matching includeIf. Git applies every
+# path in a section and later files only override the keys they define, so
+# hand-added paths are kept. Paths of git-persona profiles (ours or another
+# profile's) are replaced by a single path of ours placed last, so the
+# profile's identity keys win. Uses updated and INCLUDE_REASSIGNED from
+# add_include_if.
+finish_target() {
+    local profile_file="$1"
+    local nl=$'\n'
+    local line body kept="" pending=""
+    local count_ours=0 last_ours=0 other_persona=0
+
+    if [ -n "$sec_buf" ]; then
+        body="${sec_buf%"$nl"}"
+        while IFS= read -r line || [ -n "$line" ]; do
+            if parse_path_line "$line"; then
+                last_ours=0
+                if [ "$PATH_VALUE" = "$profile_file" ]; then
+                    count_ours=$((count_ours + 1))
+                    last_ours=1
+                    continue
+                fi
+                if is_persona_path "$PATH_VALUE"; then
+                    other_persona=1
+                    continue
+                fi
+            fi
+            if [ -z "${line//[[:space:]]/}" ]; then
+                pending="${pending}${line}${nl}"
+            else
+                kept="${kept}${pending}${line}${nl}"
+                pending=""
+            fi
+        done <<< "$body"
+    fi
+
+    updated=1
+    if [ "$count_ours" = 1 ] && [ "$last_ours" = 1 ] && [ "$other_persona" = 0 ]; then
+        printf '%s' "$sec_buf"
+        return 0
+    fi
+    if [ "$other_persona" = 1 ]; then
+        INCLUDE_REASSIGNED=1
+    fi
+    printf '%s' "$kept"
+    printf '    path = %s\n' "$(format_path_value "$profile_file")"
+    printf '%s' "$pending"
+}
+
 add_include_if() {
     local dir="$1"
     local profile_file="$2"
@@ -402,38 +477,20 @@ add_include_if() {
     INCLUDE_REASSIGNED=0
     new_tmp_file
 
-    # - Same path      -> no-op (true dedup).
-    # - Different path -> update the path line in place (reassignment).
-    # - No match       -> append a new block.
+    # A matching section is rewritten by finish_target; without one, a new
+    # block is appended.
     local src="$GITCONFIG"
     [ -f "$src" ] || src=/dev/null
-    local found_header=0 updated=0 seen_path=0
-    local line t inner
+    local in_target=0 updated=0 sec_buf=""
+    local line inner nl=$'\n'
 
     while IFS= read -r line || [ -n "$line" ]; do
-        if [ "$found_header" = 1 ]; then
+        if [ "$in_target" = 1 ]; then
             if is_section_start "$line"; then
-                # The matching header had no path line; a path further down
-                # belongs to another section and must not be touched.
-                found_header=0
-            elif parse_path_line "$line"; then
-                # Git applies every path in a section and the last one wins,
-                # so the first becomes ours and any later one is dropped.
-                if [ "$seen_path" = 0 ]; then
-                    seen_path=1
-                    updated=1
-                    if [ "$PATH_VALUE" = "$profile_file" ]; then
-                        printf '%s\n' "$line"
-                    else
-                        printf '    path = %s\n' "$(format_path_value "$profile_file")"
-                        INCLUDE_REASSIGNED=1
-                    fi
-                elif [ "$PATH_VALUE" != "$profile_file" ]; then
-                    INCLUDE_REASSIGNED=1
-                fi
-                continue
+                finish_target "$profile_file"
+                in_target=0
             else
-                printf '%s\n' "$line"
+                sec_buf="${sec_buf}${line}${nl}"
                 continue
             fi
         fi
@@ -441,13 +498,20 @@ add_include_if() {
         if is_includeif_header "$line"; then
             inner="${line#*\"}"
             inner="${inner%\"*}"
+            case "$inner" in
+                "gitdir:~/"*) inner="gitdir:${HOME}/${inner#gitdir:\~/}" ;;
+            esac
             if [ "$inner" = "gitdir:${dir}/" ]; then
-                found_header=1
-                seen_path=0
+                in_target=1
+                sec_buf=""
             fi
         fi
         printf '%s\n' "$line"
     done < "$src" > "$TMP_FILE"
+
+    if [ "$in_target" = 1 ]; then
+        finish_target "$profile_file" >> "$TMP_FILE"
+    fi
 
     if [ "$updated" = 0 ]; then
         printf '\n%s\n    path = %s\n' "$header" "$(format_path_value "$profile_file")" >> "$TMP_FILE"
@@ -957,7 +1021,7 @@ cmd_current() {
             # is not trusted.
             conf_id="${conf##*/}"
             if [ "${PROFILES_DIR}/${conf_id%.conf}.gitconfig" = "$matched_profile_file" ]; then
-                echo "Profile that would apply here: ${P_id}"
+                echo "Profile that would apply here: ${conf_id%.conf}"
                 echo "  name:     ${P_name}"
                 echo "  email:    ${P_email}"
                 echo "  base_dir: ${P_base_dir}"
