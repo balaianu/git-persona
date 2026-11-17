@@ -120,7 +120,7 @@ bash -n "$SCRIPT" && PASS=$((PASS + 1)) && echo "  PASS: bash syntax check" || {
 # --- Version ---
 echo "--- Version ---"
 output=$(run version)
-assert_equals "version output" "git-persona 1.4.5" "$output"
+assert_equals "version output" "git-persona 1.4.6" "$output"
 
 # --- Release metadata ---
 # Fails the PR that bumps VERSION without writing a changelog entry, so the
@@ -991,6 +991,85 @@ cd "$H/ok"
 output=$(run_home "$H" current)
 assert_contains "current ignores a bogus profile_file in the conf" "Profile that would apply here: ok" "$output"
 cd "$TEST_HOME"
+
+# --- Persona path classification, damaged confs, key binding ---
+echo "--- Foreign path classification ---"
+H=$(new_home classify)
+run_home "$H" create w "W" w@test.com "$H/w" --no-ssh-key >/dev/null 2>&1
+run_home "$H" create w2 "W2" w2@test.com "$H/w2" --no-ssh-key >/dev/null 2>&1
+PR="$H/.config/git-persona/profiles"
+mkdir -p "$H/x"
+
+# A ".." path that git resolves to a foreign file is not ours to drop.
+printf '[alias]\n    zz = hand\n' > "$H/.config/git-persona/team.gitconfig"
+printf '[includeIf "gitdir:%s/x/"]\n    path = %s/../team.gitconfig\n' "$H" "$PR" > "$H/.gitconfig"
+run_home "$H" use-folder w "$H/x" >/dev/null 2>&1
+assert_contains "path with .. is kept as foreign" "../team.gitconfig" "$(cat "$H/.gitconfig")"
+cd "$H/x"; git init -q
+assert_equals "foreign file reached through .. still applies" "hand" "$(HOME="$H" git config alias.zz)"
+cd "$TEST_HOME"
+
+# A quoted escape that git decodes to a control character is not a profile id.
+printf '[includeIf "gitdir:%s/x/"]\n    path = "%s/w2\\t.gitconfig"\n' "$H" "$PR" > "$H/.gitconfig"
+run_home "$H" use-folder w "$H/x" >/dev/null 2>&1
+assert_contains "escape-disguised path is kept as foreign" 'w2\t.gitconfig' "$(cat "$H/.gitconfig")"
+
+# ~user/ is expanded only for valid login names, never executed.
+mkdir -p "$H/pwn"
+printf '[includeIf "gitdir:%s/x/"]\n    path = "~a;touch %s/pwn/q"\n' "$H" "$H" > "$H/.gitconfig"
+run_home "$H" use-folder w "$H/x" >/dev/null 2>&1
+if [ -z "$(ls -A "$H/pwn")" ]; then
+    PASS=$((PASS + 1)); echo "  PASS: ~user expansion never executes the path"
+else
+    FAIL=$((FAIL + 1)); FAILED_TESTS+=("~user expansion executed"); echo "  FAIL: ~user expansion executed"
+fi
+
+echo "--- Header forms ---"
+mkdir -p "$H/Mixed" "$H/rel"
+printf '[includeIf "gitdir/i:%s/mixed/"]\n    path = %s/w.gitconfig\n' "$H" "$PR" > "$H/.gitconfig"
+run_home "$H" use-folder w "$H/Mixed" >/dev/null 2>&1
+assert_equals "gitdir/i: header deduped" "1" "$(grep -c 'includeIf' "$H/.gitconfig")"
+printf '[includeIf "gitdir:./rel/"]\n    path = %s/w.gitconfig\n' "$PR" > "$H/.gitconfig"
+run_home "$H" use-folder w "$H/rel" >/dev/null 2>&1
+assert_equals "relative ./ header deduped" "1" "$(grep -c 'includeIf' "$H/.gitconfig")"
+cd "$H/rel"
+output=$(run_home "$H" current)
+assert_contains "current resolves a ./ header" "Profile that would apply here: w" "$output"
+cd "$TEST_HOME"
+
+echo "--- Two matching sections ---"
+printf '[includeIf "gitdir:%s/x/"]\n    path = %s/w2.gitconfig\n[user]\n    name = keep\n[includeIf "gitdir:%s/x/"]\n    path = %s/hand2.inc\n' "$H" "$PR" "$H" "$H" > "$H/.gitconfig"
+run_home "$H" use-folder w "$H/x" >/dev/null 2>&1
+content="$(cat "$H/.gitconfig")"
+assert_equals "our path appears once across duplicate sections" "1" "$(grep -c "path = $PR/w.gitconfig" "$H/.gitconfig")"
+assert_not_contains "stale persona path cleared from the earlier section" "w2.gitconfig" "$content"
+assert_contains "hand-added path in the last section kept" "hand2.inc" "$content"
+assert_contains "unrelated section kept" "name = keep" "$content"
+
+echo "--- Damaged conf lifecycle ---"
+H=$(new_home damaged)
+run_home "$H" create dm "Dm" dm@test.com "$H/dm" --no-ssh-key >/dev/null 2>&1
+conf="$H/.config/git-persona/profiles/dm.conf"
+printf '%s\n' 'name="Dm"' 'email="dm@test.com"' > "$conf"
+mkdir -p "$H/dm/repo"; cd "$H/dm/repo"; git init -q
+output=$(run_home "$H" use dm 2>&1 || true)
+assert_contains "use refuses a damaged profile" "is damaged" "$output"
+cd "$TEST_HOME"
+output=$(run_home "$H" delete dm 2>&1)
+assert_contains "delete cleans a damaged profile" "Profile 'dm' deleted" "$output"
+assert_file_not_exists "damaged conf removed" "$conf"
+assert_file_not_exists "damaged profile gitconfig removed" "$H/.config/git-persona/profiles/dm.gitconfig"
+assert_not_contains "damaged profile includeIf removed" "dm.gitconfig" "$(cat "$H/.gitconfig")"
+
+echo "--- Key bound to profile ---"
+H=$(new_home keybind)
+run_home "$H" create ka "Ka" ka@test.com "$H/ka" >/dev/null 2>&1
+run_home "$H" create kb "Kb" kb@test.com "$H/kb" >/dev/null 2>&1
+conf="$H/.config/git-persona/profiles/ka.conf"
+printf '%s\n' 'id="ka"' 'name="Ka"' 'email="ka@test.com"' "key_file=\"$H/.ssh/id_ed25519_git_kb\"" 'key_owned="1"' > "$conf"
+output=$(run_home "$H" delete ka --with-keys 2>&1)
+assert_file_exists "another profile's key is never removed" "$H/.ssh/id_ed25519_git_kb"
+assert_contains "refusal names the reason" "not this profile's key" "$output"
 
 # --- Cleanup ---
 echo "--- Cleanup ---"

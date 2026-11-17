@@ -2,13 +2,13 @@
 
 # git-persona: manage multiple git identities with SSH keys and includeIf
 # Usage: git-persona <command> [args]
-# Version: 1.4.5
+# Version: 1.4.6
 # License: MIT
 # Dependencies: bash 3.2+, git 2.13+, openssh (ssh-keygen)
 
 set -euo pipefail
 
-VERSION="1.4.5"
+VERSION="1.4.6"
 
 : "${HOME:?HOME is not set}"
 
@@ -166,14 +166,17 @@ load_conf() {
 # The profile gitconfig path is fully determined by the ID, so the conf value
 # is never trusted: a damaged or tampered conf must neither leave a dangling
 # includeIf behind nor point delete at a file outside the profiles directory.
-# Like load_conf, but also rejects confs that parsed to nothing.
+# Like load_conf, but also rejects confs that parsed to nothing. The profile
+# is named by its filename, the same identity every derived path uses.
 load_conf_valid() {
-    load_conf "$1" && [ -n "$P_id" ]
+    local name="${1##*/}"
+    load_conf "$1" && [ -n "$P_id" ] || return 1
+    P_id="${name%.conf}"
 }
 
 load_profile() {
     local derived="${PROFILES_DIR}/${1}.gitconfig"
-    load_conf_valid "${PROFILES_DIR}/${1}.conf" || return 1
+    load_conf "${PROFILES_DIR}/${1}.conf" || return 1
     if [ -n "$P_profile_file" ] && [ "$P_profile_file" != "$derived" ]; then
         err "Warning: ignoring unexpected profile_file in ${1}.conf; using $derived"
     fi
@@ -283,8 +286,9 @@ lowercase() {
 # comment outside quotes, and a leading "~/" meaning $HOME.
 parse_path_line() {
     local re='^[[:space:]]*[Pp][Aa][Tt][Hh][[:space:]]*=[[:space:]]*(.*)$'
-    local rest out="" c last
+    local rest out="" c last esc th tu
     local inq=0 keep=0
+    local nl=$'\n' tab=$'\t' bsp=$'\b'
     [[ "$1" =~ $re ]] || return 1
     rest="${BASH_REMATCH[1]}"
 
@@ -292,8 +296,14 @@ parse_path_line() {
         c="${rest:0:1}"
         rest="${rest:1}"
         if [ "$c" = '\' ]; then
-            out="${out}${rest:0:1}"
+            esc="${rest:0:1}"
             rest="${rest:1}"
+            case "$esc" in
+                n) esc="$nl" ;;
+                t) esc="$tab" ;;
+                b) esc="$bsp" ;;
+            esac
+            out="${out}${esc}"
             keep=${#out}
             continue
         elif [ "$c" = '"' ]; then
@@ -320,6 +330,18 @@ parse_path_line() {
 
     case "$out" in
         "~/"*) out="${HOME}/${out#\~/}" ;;
+        "~"?*/*)
+            # ~user/: the name is validated first, so eval only ever sees
+            # characters that are valid in a login name.
+            tu="${out%%/*}"
+            tu="${tu#\~}"
+            if [[ "$tu" =~ ^[A-Za-z0-9._-]+$ ]]; then
+                th="$(eval "printf '%s' ~$tu" 2>/dev/null)" || th=""
+                case "$th" in
+                    /*) out="${th}/${out#*/}" ;;
+                esac
+            fi
+            ;;
     esac
     PATH_VALUE="$out"
     return 0
@@ -338,13 +360,39 @@ format_path_value() {
     esac
 }
 
-# True for a gitconfig that git-persona manages, as opposed to one the user
-# added by hand.
+# True for a gitconfig of the exact shape git-persona writes:
+# PROFILES_DIR/<id>.gitconfig. Anything else, including paths with "..",
+# belongs to the user.
 is_persona_path() {
+    local rest
     case "$1" in
-        "${PROFILES_DIR}"/*.gitconfig) return 0 ;;
+        "${PROFILES_DIR}"/*.gitconfig) ;;
+        *) return 1 ;;
     esac
-    return 1
+    rest="${1#"${PROFILES_DIR}"/}"
+    rest="${rest%.gitconfig}"
+    [[ "$rest" =~ ^[A-Za-z0-9_-]+$ ]]
+}
+
+# True when an includeIf header line targets dir. Understands gitdir: and
+# gitdir/i:, a leading ~/ and a leading ./ (relative to ~/.gitconfig).
+header_targets_dir() {
+    local inner="${1#*\"}" dir="$2" kind=s
+    inner="${inner%\"*}"
+    case "$inner" in
+        gitdir:*) inner="${inner#gitdir:}" ;;
+        gitdir/i:*) inner="${inner#gitdir/i:}"; kind=i ;;
+        *) return 1 ;;
+    esac
+    case "$inner" in
+        "~/"*) inner="${HOME}/${inner#\~/}" ;;
+        "./"*) inner="$(dirname "$GITCONFIG")/${inner#./}" ;;
+    esac
+    if [ "$kind" = i ]; then
+        [ "$(lowercase "$inner")" = "$(lowercase "${dir}/")" ]
+    else
+        [ "$inner" = "${dir}/" ]
+    fi
 }
 
 is_section_start() {
@@ -387,6 +435,7 @@ match_includefile() {
             block_dir="${block_dir%/}"
             case "$block_dir" in
                 "~/"*) block_dir="${HOME}/${block_dir#\~/}" ;;
+                "./"*) block_dir="$(dirname "$GITCONFIG")/${block_dir#./}" ;;
             esac
             block_phys=""
             if [ -d "$block_dir" ]; then
@@ -430,7 +479,7 @@ finish_target() {
     local profile_file="$1"
     local nl=$'\n'
     local line body kept="" pending=""
-    local count_ours=0 last_ours=0 other_persona=0
+    local count_ours=0 last_ours=0 other_persona=0 removed=0
 
     if [ -n "$sec_buf" ]; then
         body="${sec_buf%"$nl"}"
@@ -440,10 +489,12 @@ finish_target() {
                 if [ "$PATH_VALUE" = "$profile_file" ]; then
                     count_ours=$((count_ours + 1))
                     last_ours=1
+                    removed=1
                     continue
                 fi
                 if is_persona_path "$PATH_VALUE"; then
                     other_persona=1
+                    removed=1
                     continue
                 fi
             fi
@@ -457,6 +508,19 @@ finish_target() {
     fi
 
     updated=1
+    if [ "$target_idx" -lt "$n_targets" ]; then
+        # An earlier matching section: git applies it too, but only the last
+        # one needs our path. Just clear git-persona paths out of it.
+        if [ "$other_persona" = 1 ]; then
+            INCLUDE_REASSIGNED=1
+        fi
+        if [ "$removed" = 0 ]; then
+            printf '%s' "$sec_buf"
+        else
+            printf '%s%s' "$kept" "$pending"
+        fi
+        return 0
+    fi
     if [ "$count_ours" = 1 ] && [ "$last_ours" = 1 ] && [ "$other_persona" = 0 ]; then
         printf '%s' "$sec_buf"
         return 0
@@ -481,8 +545,14 @@ add_include_if() {
     # block is appended.
     local src="$GITCONFIG"
     [ -f "$src" ] || src=/dev/null
-    local in_target=0 updated=0 sec_buf=""
-    local line inner nl=$'\n'
+    local in_target=0 updated=0 sec_buf="" target_idx=0 n_targets=0
+    local line nl=$'\n'
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        if header_targets_dir "$line" "$dir"; then
+            n_targets=$((n_targets + 1))
+        fi
+    done < "$src"
 
     while IFS= read -r line || [ -n "$line" ]; do
         if [ "$in_target" = 1 ]; then
@@ -495,16 +565,10 @@ add_include_if() {
             fi
         fi
 
-        if is_includeif_header "$line"; then
-            inner="${line#*\"}"
-            inner="${inner%\"*}"
-            case "$inner" in
-                "gitdir:~/"*) inner="gitdir:${HOME}/${inner#gitdir:\~/}" ;;
-            esac
-            if [ "$inner" = "gitdir:${dir}/" ]; then
-                in_target=1
-                sec_buf=""
-            fi
+        if is_includeif_header "$line" && header_targets_dir "$line" "$dir"; then
+            in_target=1
+            sec_buf=""
+            target_idx=$((target_idx + 1))
         fi
         printf '%s\n' "$line"
     done < "$src" > "$TMP_FILE"
@@ -855,6 +919,8 @@ cmd_delete() {
     local profile_file="$P_profile_file"
     local base_dir="$P_base_dir"
     local key_name="${key_file#"${SSH_DIR}"/}"
+    local damaged=0
+    [ -n "$P_id" ] || damaged=1
 
     # Unlink from ~/.gitconfig first so a failure there leaves the profile
     # intact instead of a dangling includeIf.
@@ -866,7 +932,9 @@ cmd_delete() {
     esac
     rm -f "${PROFILES_DIR}/${id}.conf"
 
-    if [ -z "$key_file" ]; then
+    if [ "$damaged" = 1 ]; then
+        err "Warning: the conf of '$id' is damaged (it has no id). Its profile files were removed; any SSH key was not touched."
+    elif [ -z "$key_file" ]; then
         echo "No SSH key is associated with this profile."
     elif [ "$remove_keys" != true ]; then
         echo "SSH key kept: $key_file (use --with-keys to also remove it)"
@@ -874,9 +942,10 @@ cmd_delete() {
         # Confs from before 1.4.0 have no key_owned field, and there is no way
         # to tell whether git-persona generated their key, so keep it.
         echo "SSH key kept: $key_file (not recorded as generated by git-persona; remove it manually if you are sure)"
-    elif ! [[ "$key_name" =~ ^id_ed25519_git_[A-Za-z0-9_-]+$ ]]; then
-        # A damaged conf must not be able to point rm at an arbitrary file.
-        err "Refusing to remove $key_file: not a git-persona key under $SSH_DIR"
+    elif [ "$key_name" != "id_ed25519_git_${id}" ]; then
+        # A damaged conf must not be able to point rm at an arbitrary file,
+        # or at another profile's key.
+        err "Refusing to remove $key_file: not this profile's key under $SSH_DIR"
     else
         rm -f "$key_file" "${key_file}.pub"
         echo "SSH key removed: $key_file"
@@ -906,6 +975,9 @@ cmd_use() {
     fi
 
     load_profile "$id" || die "Error: profile '$id' could not be read."
+    if [ -z "$P_id" ] || [ -z "$P_name" ] || [ -z "$P_email" ]; then
+        die "Error: profile '$id' is damaged (its conf lacks an id, name or email). Run 'git-persona delete $id' and create it again."
+    fi
 
     git config user.name "$P_name"
     git config user.email "$P_email"

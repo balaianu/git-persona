@@ -5,6 +5,20 @@ All notable changes to git-persona are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.6] - 2026-11-17
+
+### Security
+- A `path` is treated as a git-persona profile only when it is exactly `<profiles dir>/<id>.gitconfig`. Paths with `..` and paths that only look like profile files are never replaced or dropped, which closes a bypass of the 1.4.5 "keep hand-added paths" guarantee.
+- `\t`, `\n` and `\b` escapes in quoted `path` values are decoded the way git decodes them, so an escaped path cannot masquerade as a profile.
+- `delete --with-keys` only removes the key named after the profile being deleted, so one profile's conf can no longer remove another profile's key.
+
+### Fixed
+- `delete` cleans up a profile whose conf is damaged (it lost its `id`), including its `includeIf` block; `use` refuses such a profile with a clear message instead of writing empty values.
+- `~user/` path values are expanded like git does. The name is validated first and nothing from the config file is ever executed.
+- `gitdir/i:` and `gitdir:./` headers are recognised when deduplicating and matching.
+- When several sections target the same folder, only the last one gets our path; git-persona paths are cleared from the others.
+- `list` and `current` name profiles by filename consistently.
+
 ## [1.4.5] - 2026-11-17
 
 ### Fixed
