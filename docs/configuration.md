@@ -14,16 +14,19 @@
 ~/.config/git-persona/profiles/<id>.conf
 ```
 
-Each file is a simple key=value file that bash can source:
+Each file is a simple `key="value"` file. `git-persona` parses it line by line and never executes it. Values are escaped so the file stays safe to source from bash:
 
 ```ini
 id="work"
 name="Work Name"
 email="work@example.com"
-base_dir="/home/andy/dev/work"
-key_file="/home/andy/.ssh/id_ed25519_git_work"
-profile_file="/home/andy/.config/git-persona/profiles/work.gitconfig"
+base_dir="/home/user/dev/work"
+key_file="/home/user/.ssh/id_ed25519_git_work"
+profile_file="/home/user/.config/git-persona/profiles/work.gitconfig"
+key_owned="1"
 ```
+
+`key_file` is empty for profiles created with `--no-ssh-key`. `key_owned` is `1` when `git-persona` generated the key and `0` when it reused a key that already existed; `delete --with-keys` only removes keys it owns, and only under `~/.ssh` with the `id_ed25519_git_` prefix.
 
 ### Profile configs
 
@@ -35,19 +38,21 @@ Each file contains the Git config for that profile. With SSH key (default):
 
 ```ini
 [user]
-    name = Work Name
-    email = work@example.com
+	name = Work Name
+	email = work@example.com
 [core]
-    sshCommand = ssh -i /home/andy/.ssh/id_ed25519_git_work -o IdentitiesOnly=yes
+	sshCommand = ssh -i '/home/user/.ssh/id_ed25519_git_work' -o IdentitiesOnly=yes
 ```
 
 Without SSH key (`--no-ssh-key`):
 
 ```ini
 [user]
-    name = Work Name
-    email = work@example.com
+	name = Work Name
+	email = work@example.com
 ```
+
+These files are written with `git config --file`, so names and emails containing quotes, `#`, `;` or backslashes are escaped correctly. Names and emails containing control characters (including newlines) are rejected.
 
 ### SSH keys
 
@@ -64,16 +69,20 @@ Keys are named with a `git_` prefix to distinguish them from other SSH keys.
 ~/.gitconfig
 ```
 
+If `~/.gitconfig` is a symlink (for example managed by a dotfiles tool), edits are written through the link and the link is kept. Before each change the previous content is saved to `~/.config/git-persona/gitconfig.bak`. Only the `includeIf` blocks that `git-persona` manages are added or removed; the rest of the file is left as it was.
+
 `git-persona` adds `includeIf` blocks to this file:
 
 ```ini
-[includeIf "gitdir:/home/andy/dev/work/"]
-    path = /home/andy/.config/git-persona/profiles/work.gitconfig
+[includeIf "gitdir:/home/user/dev/work/"]
+    path = /home/user/.config/git-persona/profiles/work.gitconfig
 ```
 
 ## How includeIf works
 
 Git's `includeIf` directive applies a config file only when the current repository is under the specified path.
+
+Directories whose path contains `"`, `\`, `*`, `?` or `[` are rejected, because those characters change how `gitdir:` matches.
 
 The `gitdir:` pattern matches any git repo whose working tree is under the given directory. The trailing `/` is important — it ensures subdirectories are matched.
 
@@ -117,7 +126,7 @@ Then manually remove any `includeIf` entries from `~/.gitconfig` that reference 
 
 `git-persona` has no external dependencies beyond standard system tools:
 
-- **bash** 4.0+ — the script itself
+- **bash** 3.2+ — the script itself
 - **git** 2.13+ — for `includeIf` support and config manipulation
 - **openssh** — for `ssh-keygen` to generate SSH keys
 

@@ -6,8 +6,8 @@
 
 [![Tests](https://github.com/balaianu/git-persona/actions/workflows/tests.yml/badge.svg)](https://github.com/balaianu/git-persona/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.3.0-green.svg)](https://github.com/balaianu/git-persona/releases)
-[![Bash](https://img.shields.io/badge/bash-4.0%2B-green.svg)](https://www.gnu.org/software/bash/)
+[![Version](https://img.shields.io/github/v/release/balaianu/git-persona?color=green)](https://github.com/balaianu/git-persona/releases)
+[![Bash](https://img.shields.io/badge/bash-3.2%2B-green.svg)](https://www.gnu.org/software/bash/)
 [![Buy Me A Coffee](https://img.shields.io/badge/☕-Buy%20Me%20A%20Coffee-yellow)](https://buymeacoffee.com/balaianu)
 
 ---
@@ -63,7 +63,7 @@ Now every repo under `~/dev/work/` uses your work identity. Every repo under `~/
 
 ## Requirements
 
-- Bash 4.0+
+- Bash 3.2+
 - Git 2.13+ (for `includeIf` support)
 - OpenSSH (for `ssh-keygen`)
 
@@ -205,13 +205,13 @@ Profiles:
   work
     name:     Work Name
     email:    work@example.com
-    base_dir: /home/andy/dev/work
-    key:      /home/andy/.ssh/id_ed25519_git_work
+    base_dir: /home/user/dev/work
+    key:      /home/user/.ssh/id_ed25519_git_work
   personal
     name:     Personal Name
     email:    personal@example.com
-    base_dir: /home/andy/dev/personal
-    key:      /home/andy/.ssh/id_ed25519_git_personal
+    base_dir: /home/user/dev/personal
+    key:      /home/user/.ssh/id_ed25519_git_personal
 ```
 
 ### Apply a profile to the current repo
@@ -239,7 +239,7 @@ git persona current
 Current profile: work
   name:  Work Name
   email: work@example.com
-  key:   /home/andy/.ssh/id_ed25519_git_work
+  key:   /home/user/.ssh/id_ed25519_git_work
 ```
 
 ### Delete a profile
@@ -280,11 +280,11 @@ When you create a profile, it generates:
 And adds to `~/.gitconfig`:
 
 ```ini
-[includeIf "gitdir:/home/andy/dev/work/"]
-    path = /home/andy/.config/git-persona/profiles/work.gitconfig
+[includeIf "gitdir:/home/user/dev/work/"]
+    path = /home/user/.config/git-persona/profiles/work.gitconfig
 
-[includeIf "gitdir:/home/andy/dev/personal/"]
-    path = /home/andy/.config/git-persona/profiles/personal.gitconfig
+[includeIf "gitdir:/home/user/dev/personal/"]
+    path = /home/user/.config/git-persona/profiles/personal.gitconfig
 ```
 
 Each profile config sets `user.name`, `user.email`, and `core.sshCommand`:
@@ -294,7 +294,7 @@ Each profile config sets `user.name`, `user.email`, and `core.sshCommand`:
     name = Work Name
     email = work@example.com
 [core]
-    sshCommand = ssh -i /home/andy/.ssh/id_ed25519_git_work -o IdentitiesOnly=yes
+    sshCommand = ssh -i '/home/user/.ssh/id_ed25519_git_work' -o IdentitiesOnly=yes
 ```
 
 So any repo under `~/dev/work/` automatically uses the work identity and SSH key. No per-repo config needed.

@@ -55,7 +55,7 @@ The test suite uses an isolated temp directory as `HOME`, so it won't touch your
 
 - Use `bash` with `set -euo pipefail`
 - Use pure bash for text manipulation (no sed, awk, Python, or jq)
-- Profile metadata is stored as bash-sourceable key=value files
+- Profile metadata is stored as `key="value"` files that are parsed, never sourced, by the script
 - Keep functions small and focused
 - Use `local` variables inside functions
 - Quote all variable expansions
