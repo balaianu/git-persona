@@ -2,13 +2,13 @@
 
 # git-persona: manage multiple git identities with SSH keys and includeIf
 # Usage: git-persona <command> [args]
-# Version: 1.4.6
+# Version: 1.4.7
 # License: MIT
 # Dependencies: bash 3.2+, git 2.13+, openssh (ssh-keygen)
 
 set -euo pipefail
 
-VERSION="1.4.6"
+VERSION="1.4.7"
 
 : "${HOME:?HOME is not set}"
 
@@ -24,6 +24,9 @@ INCLUDE_REASSIGNED=0
 
 # Profile fields populated by load_conf.
 P_id="" P_name="" P_email="" P_base_dir="" P_key_file="" P_profile_file="" P_key_owned=""
+# The id written inside the conf; P_id itself is the filename id after load_profile.
+P_conf_id=""
+INCLUDEIF_COND=""
 
 trap '[ -z "$TMP_FILE" ] || rm -f "$TMP_FILE"' EXIT
 
@@ -163,9 +166,6 @@ load_conf() {
     return 0
 }
 
-# The profile gitconfig path is fully determined by the ID, so the conf value
-# is never trusted: a damaged or tampered conf must neither leave a dangling
-# includeIf behind nor point delete at a file outside the profiles directory.
 # Like load_conf, but also rejects confs that parsed to nothing. The profile
 # is named by its filename, the same identity every derived path uses.
 load_conf_valid() {
@@ -174,13 +174,26 @@ load_conf_valid() {
     P_id="${name%.conf}"
 }
 
+# The profile gitconfig path is fully determined by the ID, so the conf value
+# is never trusted: a damaged or tampered conf must neither leave a dangling
+# includeIf behind nor point delete at a file outside the profiles directory.
+# P_id is the filename id, like in list and current; the id written in the
+# conf stays in P_conf_id so a missing one can still be detected.
 load_profile() {
     local derived="${PROFILES_DIR}/${1}.gitconfig"
     load_conf "${PROFILES_DIR}/${1}.conf" || return 1
+    P_conf_id="$P_id"
+    P_id="$1"
     if [ -n "$P_profile_file" ] && [ "$P_profile_file" != "$derived" ]; then
         err "Warning: ignoring unexpected profile_file in ${1}.conf; using $derived"
     fi
     P_profile_file="$derived"
+}
+
+require_complete_profile() {
+    if [ -z "$P_conf_id" ] || [ -z "$P_name" ] || [ -z "$P_email" ]; then
+        die "Error: profile '$1' is damaged (its conf lacks an id, name or email). Run 'git-persona delete $1' and create it again."
+    fi
 }
 
 # ── SSH command ──────────────────────────────────────────────────────────────
@@ -331,11 +344,12 @@ parse_path_line() {
     case "$out" in
         "~/"*) out="${HOME}/${out#\~/}" ;;
         "~"?*/*)
-            # ~user/: the name is validated first, so eval only ever sees
-            # characters that are valid in a login name.
+            # ~user/: the name must look like a login name (so ~-, ~+ and ~0,
+            # which bash treats specially, never reach eval), and eval only
+            # ever sees characters that are valid in one.
             tu="${out%%/*}"
             tu="${tu#\~}"
-            if [[ "$tu" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            if [[ "$tu" =~ ^[A-Za-z_][A-Za-z0-9._-]*$ ]]; then
                 th="$(eval "printf '%s' ~$tu" 2>/dev/null)" || th=""
                 case "$th" in
                     /*) out="${th}/${out#*/}" ;;
@@ -377,8 +391,9 @@ is_persona_path() {
 # True when an includeIf header line targets dir. Understands gitdir: and
 # gitdir/i:, a leading ~/ and a leading ./ (relative to ~/.gitconfig).
 header_targets_dir() {
-    local inner="${1#*\"}" dir="$2" kind=s
-    inner="${inner%\"*}"
+    local inner dir="$2" kind=s
+    includeif_condition "$1" || return 1
+    inner="$INCLUDEIF_COND"
     case "$inner" in
         gitdir:*) inner="${inner#gitdir:}" ;;
         gitdir/i:*) inner="${inner#gitdir/i:}"; kind=i ;;
@@ -398,6 +413,15 @@ header_targets_dir() {
 is_section_start() {
     local t="${1#"${1%%[![:space:]]*}"}"
     [ "${t:0:1}" = "[" ]
+}
+
+# Set INCLUDEIF_COND to the quoted condition of an includeIf header line.
+# Fails for every other line, including comments and values that merely
+# contain a quoted string.
+includeif_condition() {
+    local re='^[[:space:]]*\[[iI][nN][cC][lL][uU][dD][eE][iI][fF][[:space:]]+"([^"]*)"[[:space:]]*\]'
+    [[ "$1" =~ $re ]] || return 1
+    INCLUDEIF_COND="${BASH_REMATCH[1]}"
 }
 
 is_includeif_header() {
@@ -424,8 +448,8 @@ match_includefile() {
 
         if is_includeif_header "$line"; then
             in_block=0
-            inner="${line#*\"}"
-            inner="${inner%\"*}"
+            includeif_condition "$line" || continue
+            inner="$INCLUDEIF_COND"
             icase=0
             case "$inner" in
                 gitdir:*) block_dir="${inner#gitdir:}" ;;
@@ -549,7 +573,7 @@ add_include_if() {
     local line nl=$'\n'
 
     while IFS= read -r line || [ -n "$line" ]; do
-        if header_targets_dir "$line" "$dir"; then
+        if is_includeif_header "$line" && header_targets_dir "$line" "$dir"; then
             n_targets=$((n_targets + 1))
         fi
     done < "$src"
@@ -920,7 +944,7 @@ cmd_delete() {
     local base_dir="$P_base_dir"
     local key_name="${key_file#"${SSH_DIR}"/}"
     local damaged=0
-    [ -n "$P_id" ] || damaged=1
+    [ -n "$P_conf_id" ] || damaged=1
 
     # Unlink from ~/.gitconfig first so a failure there leaves the profile
     # intact instead of a dangling includeIf.
@@ -945,14 +969,16 @@ cmd_delete() {
     elif [ "$key_name" != "id_ed25519_git_${id}" ]; then
         # A damaged conf must not be able to point rm at an arbitrary file,
         # or at another profile's key.
-        err "Refusing to remove $key_file: not this profile's key under $SSH_DIR"
+        err "Refusing to remove $key_file: profile '$id' owns $SSH_DIR/id_ed25519_git_${id}"
     else
         rm -f "$key_file" "${key_file}.pub"
         echo "SSH key removed: $key_file"
     fi
 
     echo "Profile '$id' deleted."
-    echo "Note: base directory $base_dir was not removed."
+    if [ -n "$base_dir" ]; then
+        echo "Note: base directory $base_dir was not removed."
+    fi
 }
 
 cmd_use() {
@@ -975,9 +1001,7 @@ cmd_use() {
     fi
 
     load_profile "$id" || die "Error: profile '$id' could not be read."
-    if [ -z "$P_id" ] || [ -z "$P_name" ] || [ -z "$P_email" ]; then
-        die "Error: profile '$id' is damaged (its conf lacks an id, name or email). Run 'git-persona delete $id' and create it again."
-    fi
+    require_complete_profile "$id"
 
     git config user.name "$P_name"
     git config user.email "$P_email"
@@ -1021,6 +1045,7 @@ cmd_use_folder() {
 
     require_lf_gitconfig
     load_profile "$id" || die "Error: profile '$id' could not be read."
+    require_complete_profile "$id"
 
     add_include_if "$folder" "$P_profile_file"
 

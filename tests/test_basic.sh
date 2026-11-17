@@ -120,7 +120,7 @@ bash -n "$SCRIPT" && PASS=$((PASS + 1)) && echo "  PASS: bash syntax check" || {
 # --- Version ---
 echo "--- Version ---"
 output=$(run version)
-assert_equals "version output" "git-persona 1.4.6" "$output"
+assert_equals "version output" "git-persona 1.4.7" "$output"
 
 # --- Release metadata ---
 # Fails the PR that bumps VERSION without writing a changelog entry, so the
@@ -1069,7 +1069,62 @@ conf="$H/.config/git-persona/profiles/ka.conf"
 printf '%s\n' 'id="ka"' 'name="Ka"' 'email="ka@test.com"' "key_file=\"$H/.ssh/id_ed25519_git_kb\"" 'key_owned="1"' > "$conf"
 output=$(run_home "$H" delete ka --with-keys 2>&1)
 assert_file_exists "another profile's key is never removed" "$H/.ssh/id_ed25519_git_kb"
-assert_contains "refusal names the reason" "not this profile's key" "$output"
+assert_contains "refusal names the profile that owns the key" "owns" "$output"
+
+# --- Lines that merely mention a gitdir string must not count as sections ---
+echo "--- Stray gitdir mentions ---"
+H=$(new_home strays)
+run_home "$H" create w "W" w@test.com "$H/w" --no-ssh-key >/dev/null 2>&1
+PW="$H/.config/git-persona/profiles/w.gitconfig"
+mkdir -p "$H/x"
+for variant in comment-after value-before quoted-comment; do
+    case "$variant" in
+        comment-after) printf '[includeIf "gitdir:%s/x/"]\n    path = /hand.inc\n#[includeIf "gitdir:%s/x/"]\n' "$H" "$H" > "$H/.gitconfig" ;;
+        value-before) printf '[alias]\n    zz = "gitdir:%s/x/"\n[includeIf "gitdir:%s/x/"]\n    path = /hand.inc\n' "$H" "$H" > "$H/.gitconfig" ;;
+        quoted-comment) printf '[includeIf "gitdir:%s/x/"] # keep "this" one\n    path = /hand.inc\n' "$H" > "$H/.gitconfig" ;;
+    esac
+    run_home "$H" use-folder w "$H/x" >/dev/null 2>&1
+    content="$(cat "$H/.gitconfig")"
+    assert_contains "$variant: our path is written" "path = $PW" "$content"
+    assert_contains "$variant: hand-added path kept" "/hand.inc" "$content"
+    expected_headers=1
+    [ "$variant" = comment-after ] && expected_headers=2
+    assert_equals "$variant: no extra section appended" "$expected_headers" "$(printf '%s\n' "$content" | grep -c 'includeIf')"
+done
+printf '[includeIf "gitdir:%s/x/"] # keep "this" one\n    path = /hand.inc\n' "$H" > "$H/.gitconfig"
+run_home "$H" use-folder w "$H/x" >/dev/null 2>&1
+assert_equals "header with a quoted comment is reused, not duplicated" "1" "$(grep -c 'includeIf' "$H/.gitconfig")"
+
+# --- ~ forms that are not login names stay literal ---
+echo "--- Tilde forms ---"
+PR="$H/.config/git-persona/profiles"
+run_home "$H" create w2 "W2" w2@test.com "$H/w2" --no-ssh-key >/dev/null 2>&1
+printf '[includeIf "gitdir:%s/x/"]\n    path = ~-/w2.gitconfig\n' "$H" > "$H/.gitconfig"
+OLDPWD="$PR" run_home "$H" use-folder w "$H/x" >/dev/null 2>&1
+assert_contains "~- is not expanded to OLDPWD and stays a foreign path" "~-/w2.gitconfig" "$(cat "$H/.gitconfig")"
+
+# --- use-folder refuses a profile that use refuses ---
+echo "--- Damaged profile in use-folder ---"
+H=$(new_home dmg-folder)
+run_home "$H" create dg "Dg" dg@test.com "$H/dg" --no-ssh-key >/dev/null 2>&1
+printf '%s\n' 'name="Dg"' 'email="dg@test.com"' > "$H/.config/git-persona/profiles/dg.conf"
+mkdir -p "$H/other"
+output=$(run_home "$H" use-folder dg "$H/other" 2>&1 || true)
+assert_contains "use-folder refuses a damaged profile" "is damaged" "$output"
+assert_not_contains "no includeIf written for a damaged profile" "$H/other" "$(cat "$H/.gitconfig")"
+output=$(run_home "$H" delete dg 2>&1)
+assert_not_contains "damaged delete does not print an empty base directory" "base directory  was" "$output"
+
+# --- A conf whose id differs from its filename ---
+echo "--- id vs filename ---"
+H=$(new_home idname)
+run_home "$H" create ya "Ya" ya@test.com "$H/ya" >/dev/null 2>&1
+printf '%s\n' 'id="xa"' 'name="Ya"' 'email="ya@test.com"' "key_file=\"$H/.ssh/id_ed25519_git_xa\"" 'key_owned="1"' > "$H/.config/git-persona/profiles/ya.conf"
+printf 'K' > "$H/.ssh/id_ed25519_git_xa"
+output=$(run_home "$H" delete ya --with-keys 2>&1)
+assert_file_exists "key of a differently-named id is kept" "$H/.ssh/id_ed25519_git_xa"
+assert_contains "refusal says which key the profile owns" "id_ed25519_git_ya" "$output"
+assert_contains "profile is still deleted" "Profile 'ya' deleted" "$output"
 
 # --- Cleanup ---
 echo "--- Cleanup ---"

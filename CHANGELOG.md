@@ -5,6 +5,16 @@ All notable changes to git-persona are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.7] - 2026-11-17
+
+### Fixed
+- `use-folder` and `create` no longer report success while writing nothing when another line of `~/.gitconfig` merely contains a quoted `gitdir:<dir>/` string, for example a commented-out `includeIf` header. Only real `includeIf` headers count as sections, and headers followed by a comment with quotes are recognised.
+- `~-`, `~+` and `~0` are no longer expanded as tildes; only names shaped like a login name reach `~user` expansion.
+- `use-folder` refuses a profile whose conf lacks an id, name or email, like `use` does.
+- `list`, `current`, `use` and `delete` all name a profile by its filename. If a conf's id differs from its filename, `delete --with-keys` refuses the key and says which key the profile owns.
+- `delete` no longer prints an empty base directory for a damaged conf.
+- The docs describe key removal as exactly the profile's own key, and note that broader gitdir patterns are left alone.
+
 ## [1.4.6] - 2026-11-17
 
 ### Security
