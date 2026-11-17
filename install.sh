@@ -2,11 +2,12 @@
 
 # install.sh: One-liner installer for git-persona
 # Usage: curl -fsSL https://raw.githubusercontent.com/balaianu/git-persona/main/install.sh | bash
+# Pin a release: GIT_PERSONA_REF=vX.Y.Z bash install.sh
 
 set -euo pipefail
 
 REPO="balaianu/git-persona"
-BRANCH="main"
+REF="${GIT_PERSONA_REF:-main}"
 INSTALL_DIR="${HOME}/.local/bin"
 SCRIPT_NAME="git-persona"
 
@@ -32,17 +33,21 @@ fi
 # Create install directory
 mkdir -p "$INSTALL_DIR"
 
-# Download the script
-info "Downloading git-persona..."
-URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/src/${SCRIPT_NAME}"
-$FETCH "$URL" > "${INSTALL_DIR}/${SCRIPT_NAME}" || error "Failed to download from $URL"
-chmod +x "${INSTALL_DIR}/${SCRIPT_NAME}"
+# Download to a temp file first so an interrupted download or a failed check
+# never replaces a working install.
+TMP="$(mktemp "${INSTALL_DIR}/.${SCRIPT_NAME}.XXXXXX")"
+trap 'rm -f "$TMP"' EXIT
 
-# Verify
-if ! bash -n "${INSTALL_DIR}/${SCRIPT_NAME}" 2>/dev/null; then
-    rm -f "${INSTALL_DIR}/${SCRIPT_NAME}"
-    error "Downloaded script failed syntax check. Installation aborted."
+info "Downloading git-persona (${REF})..."
+URL="https://raw.githubusercontent.com/${REPO}/${REF}/src/${SCRIPT_NAME}"
+$FETCH "$URL" > "$TMP" || error "Failed to download from $URL"
+
+if ! bash -n "$TMP" 2>/dev/null || ! head -n 1 "$TMP" | grep -q '^#!.*bash'; then
+    error "Downloaded script failed verification. Installation aborted; existing install left untouched."
 fi
+
+chmod +x "$TMP"
+mv "$TMP" "${INSTALL_DIR}/${SCRIPT_NAME}"
 
 # Check PATH
 case ":${PATH}:" in

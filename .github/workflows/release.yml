@@ -16,6 +16,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify tag matches script version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          SCRIPT_VERSION=$(bash src/git-persona version | awk '{print $2}')
+          if [ "v${SCRIPT_VERSION}" != "$TAG" ]; then
+            echo "Tag $TAG does not match script version v${SCRIPT_VERSION}" >&2
+            exit 1
+          fi
+
+      - name: Run test suite
+        run: bash tests/test_basic.sh
+
       - name: Extract changelog for this version
         id: changelog
         run: |
