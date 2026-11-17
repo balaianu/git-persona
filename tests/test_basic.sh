@@ -120,7 +120,17 @@ bash -n "$SCRIPT" && PASS=$((PASS + 1)) && echo "  PASS: bash syntax check" || {
 # --- Version ---
 echo "--- Version ---"
 output=$(run version)
-assert_equals "version output" "git-persona 1.3.0" "$output"
+assert_equals "version output" "git-persona 1.4.0" "$output"
+
+# --- Release metadata ---
+# Fails the PR that bumps VERSION without writing a changelog entry, so the
+# release workflow never falls back to a bare "Release vX" note.
+script_version="${output#git-persona }"
+if grep -q "^## \\[${script_version}\\]" "$PROJECT_DIR/CHANGELOG.md"; then
+    PASS=$((PASS + 1)); echo "  PASS: CHANGELOG has an entry for $script_version"
+else
+    FAIL=$((FAIL + 1)); FAILED_TESTS+=("CHANGELOG entry for $script_version"); echo "  FAIL: CHANGELOG has no entry for $script_version"
+fi
 
 # --- Help ---
 echo "--- Help ---"
@@ -511,6 +521,203 @@ if [ "$output" = "GIT_EXTENSION_FAILED" ]; then
 else
     assert_contains "git persona extension works" "git-persona" "$output"
 fi
+
+# ============================================================================
+# Hardening tests. Each scenario gets its own throwaway HOME under TEST_HOME.
+# ============================================================================
+
+run_home() {
+    local h="$1"
+    shift
+    HOME="$h" bash "$SCRIPT" "$@"
+}
+
+new_home() {
+    local h="$TEST_HOME/homes/$1"
+    mkdir -p "$h"
+    printf '%s' "$h"
+}
+
+# --- current: a key path that prefixes another key path ---
+echo "--- Current (key path prefix collision) ---"
+H=$(new_home prefix)
+run_home "$H" create pre "Pre" pre@test.com "$H/pre" >/dev/null 2>&1
+run_home "$H" create pre2 "Pre Two" pre2@test.com "$H/pre2" >/dev/null 2>&1
+mkdir -p "$H/pre2/repo"
+cd "$H/pre2/repo"
+git init -q
+run_home "$H" use pre2 >/dev/null
+output=$(run_home "$H" current)
+assert_contains "current resolves pre2, not its prefix pre" "Current profile: pre2" "$output"
+cd "$TEST_HOME"
+
+# --- Values written to the profile gitconfig survive intact ---
+echo "--- Profile gitconfig escaping ---"
+H=$(new_home escape)
+TRICKY='A "B" #c ;d \e'
+run_home "$H" create tricky "$TRICKY" 'e@test.com' "$H/tricky" --no-ssh-key >/dev/null 2>&1
+assert_equals "tricky name round-trips through git" "$TRICKY" "$(git config --file "$H/.config/git-persona/profiles/tricky.gitconfig" user.name)"
+output=$(run_home "$H" list)
+assert_contains "tricky name round-trips through conf" "$TRICKY" "$output"
+
+echo "--- Reject newline injection ---"
+INJECT=$'Evil\n[core]\n\tsshCommand = touch PWNED'
+output=$(run_home "$H" create inj "$INJECT" inj@test.com "$H/inj" --no-ssh-key 2>&1 || true)
+assert_contains "newline in name rejected" "control characters" "$output"
+assert_file_not_exists "no conf left after rejected create" "$H/.config/git-persona/profiles/inj.conf"
+output=$(run_home "$H" create inj2 "Ok" $'a@b\n[core]' "$H/inj2" --no-ssh-key 2>&1 || true)
+assert_contains "newline in email rejected" "control characters" "$output"
+
+# --- Input validation ---
+echo "--- Input validation ---"
+output=$(run_home "$H" create badflag Name e@test.com "$H/badflag" --bogus 2>&1 || true)
+assert_contains "unknown create option rejected" "Unknown option" "$output"
+output=$(run_home "$H" delete --bogus 2>&1 || true)
+assert_contains "unknown delete option rejected" "Unknown option" "$output"
+output=$(run_home "$H" create globby Name e@test.com "$H/we*ird" --no-ssh-key 2>&1 || true)
+assert_contains "glob chars in base_dir rejected" "cannot be used" "$output"
+assert_file_not_exists "no conf for rejected base_dir" "$H/.config/git-persona/profiles/globby.conf"
+
+# --- Errors go to stderr, not stdout ---
+echo "--- Errors on stderr ---"
+output=$(run_home "$H" use "../etc" 2>/dev/null || true)
+assert_equals "invalid id error not on stdout" "" "$output"
+
+# --- Key path with spaces ---
+echo "--- SSH command quoting ---"
+H=$(new_home "with space")
+run_home "$H" create sp "Sp" sp@test.com "$H/sp" >/dev/null 2>&1
+mkdir -p "$H/sp/repo"
+cd "$H/sp/repo"
+git init -q
+run_home "$H" use sp >/dev/null
+SSH_CMD="$(git config core.sshCommand)"
+eval "set -- $SSH_CMD"
+assert_equals "sshCommand key arg survives shell word splitting" "$H/.ssh/id_ed25519_git_sp" "$3"
+set --
+output=$(run_home "$H" current)
+assert_contains "current matches quoted sshCommand" "Current profile: sp" "$output"
+cd "$TEST_HOME"
+
+# --- Symlinked ~/.gitconfig is preserved and restored byte-for-byte ---
+echo "--- Symlinked gitconfig ---"
+H=$(new_home symlink)
+mkdir -p "$H/dotfiles"
+printf '[user]\n\tname = X\n\n\n[alias]\n\tco = checkout\n' > "$H/dotfiles/gitconfig"
+cp "$H/dotfiles/gitconfig" "$H/original"
+ln -s "$H/dotfiles/gitconfig" "$H/.gitconfig"
+run_home "$H" create sl "Sl" sl@test.com "$H/sl" --no-ssh-key >/dev/null 2>&1
+if [ -L "$H/.gitconfig" ]; then
+    PASS=$((PASS + 1)); echo "  PASS: gitconfig symlink survives create"
+else
+    FAIL=$((FAIL + 1)); FAILED_TESTS+=("gitconfig symlink survives create"); echo "  FAIL: gitconfig symlink survives create"
+fi
+assert_contains "includeIf written through symlink" "gitdir:$H/sl/" "$(cat "$H/dotfiles/gitconfig")"
+assert_file_exists "gitconfig backup written" "$H/.config/git-persona/gitconfig.bak"
+run_home "$H" delete sl >/dev/null 2>&1
+if cmp -s "$H/original" "$H/dotfiles/gitconfig" && [ -L "$H/.gitconfig" ]; then
+    PASS=$((PASS + 1)); echo "  PASS: delete restores gitconfig exactly, symlink intact"
+else
+    FAIL=$((FAIL + 1)); FAILED_TESTS+=("delete restores gitconfig exactly"); echo "  FAIL: delete restores gitconfig exactly"
+    diff "$H/original" "$H/dotfiles/gitconfig" || true
+fi
+
+# --- Existing keys are never reused by --no-ssh-key or deleted unless owned ---
+echo "--- Key ownership ---"
+H=$(new_home keys)
+mkdir -p "$H/.ssh"
+for k in nk reuse; do
+    printf 'PRIVATE' > "$H/.ssh/id_ed25519_git_$k"
+    printf 'PUBLIC' > "$H/.ssh/id_ed25519_git_$k.pub"
+done
+run_home "$H" create nk "Nk" nk@test.com "$H/nk" --no-ssh-key >/dev/null 2>&1
+assert_not_contains "--no-ssh-key ignores a pre-existing key" "sshCommand" "$(cat "$H/.config/git-persona/profiles/nk.gitconfig")"
+run_home "$H" delete nk --with-keys >/dev/null 2>&1
+assert_file_exists "--no-ssh-key profile delete leaves unrelated key" "$H/.ssh/id_ed25519_git_nk"
+output=$(run_home "$H" create reuse "Re" re@test.com "$H/reuse" 2>&1)
+assert_contains "reuse reports existing key" "already exists" "$output"
+assert_contains "reused key is wired into sshCommand" "id_ed25519_git_reuse" "$(cat "$H/.config/git-persona/profiles/reuse.gitconfig")"
+output=$(run_home "$H" delete reuse --with-keys 2>&1)
+assert_file_exists "delete --with-keys keeps a key it did not generate" "$H/.ssh/id_ed25519_git_reuse"
+assert_contains "delete explains why key was kept" "not generated by git-persona" "$output"
+
+# --- delete --with-keys refuses paths outside ~/.ssh ---
+echo "--- Delete refuses foreign key path ---"
+H=$(new_home foreign)
+run_home "$H" create victim "V" v@test.com "$H/victim" --no-ssh-key >/dev/null 2>&1
+printf 'PRECIOUS' > "$H/precious"
+printf '%s\n' 'id="victim"' 'name="V"' 'email="v@test.com"' "base_dir=\"$H/victim\"" \
+    "key_file=\"$H/precious\"" "profile_file=\"$H/.config/git-persona/profiles/victim.gitconfig\"" \
+    > "$H/.config/git-persona/profiles/victim.conf"
+output=$(run_home "$H" delete victim --with-keys 2>&1)
+assert_file_exists "foreign key_file not deleted" "$H/precious"
+assert_contains "refusal is reported" "Refusing to remove" "$output"
+assert_file_not_exists "profile still deleted" "$H/.config/git-persona/profiles/victim.conf"
+
+# --- Conf files are parsed, never executed ---
+echo "--- Conf is not sourced ---"
+H=$(new_home noexec)
+mkdir -p "$H/.config/git-persona/profiles"
+printf '%s\n' 'id="evil"' "name=\"\$(touch $H/PWNED1)\"" 'email="e@test.com"' \
+    "touch $H/PWNED2" "key_file=\"\"; touch $H/PWNED3" \
+    > "$H/.config/git-persona/profiles/evil.conf"
+output=$(run_home "$H" list 2>&1)
+assert_contains "list shows literal command text" "touch $H/PWNED1" "$output"
+if [ -e "$H/PWNED1" ] || [ -e "$H/PWNED2" ] || [ -e "$H/PWNED3" ]; then
+    FAIL=$((FAIL + 1)); FAILED_TESTS+=("conf executed code"); echo "  FAIL: conf executed code"
+else
+    PASS=$((PASS + 1)); echo "  PASS: conf content is never executed"
+fi
+
+# --- Failed create leaves nothing behind ---
+echo "--- Create rollback ---"
+H=$(new_home rollback)
+FAKEBIN="$H/fakebin"
+mkdir -p "$FAKEBIN"
+printf '#!/bin/sh\nexit 1\n' > "$FAKEBIN/ssh-keygen"
+chmod +x "$FAKEBIN/ssh-keygen"
+output=$(PATH="$FAKEBIN:$PATH" run_home "$H" create rb "Rb" rb@test.com "$H/rb" 2>&1 || true)
+assert_contains "failed create reports rollback" "partial profile files were removed" "$output"
+assert_file_not_exists "rollback removed conf" "$H/.config/git-persona/profiles/rb.conf"
+assert_file_not_exists "rollback removed profile gitconfig" "$H/.config/git-persona/profiles/rb.gitconfig"
+output=$(run_home "$H" create rb "Rb" rb@test.com "$H/rb" --no-ssh-key 2>&1)
+assert_contains "create succeeds after rolled-back attempt" "Profile 'rb' created" "$output"
+
+# --- Read-only commands leave no trace ---
+echo "--- No side effects ---"
+H=$(new_home pristine)
+for c in version help list current; do
+    run_home "$H" "$c" >/dev/null 2>&1 || true
+done
+if [ -e "$H/.config" ] || [ -e "$H/.gitconfig" ] || [ -e "$H/.ssh" ]; then
+    FAIL=$((FAIL + 1)); FAILED_TESTS+=("read-only commands left files"); echo "  FAIL: read-only commands left files"
+else
+    PASS=$((PASS + 1)); echo "  PASS: version/help/list/current create nothing"
+fi
+
+# --- Default base_dir ---
+echo "--- Default base_dir ---"
+H=$(new_home defbase)
+output=$(run_home "$H" create defp "D" d@test.com --no-ssh-key 2>&1)
+assert_contains "create without base_dir succeeds" "Profile 'defp' created" "$output"
+if [ -d "$H/git-profiles/defp" ]; then
+    PASS=$((PASS + 1)); echo "  PASS: default base_dir created"
+else
+    FAIL=$((FAIL + 1)); FAILED_TESTS+=("default base_dir created"); echo "  FAIL: default base_dir created"
+fi
+
+# --- Folder matching through symlinks, and reassignment notice ---
+echo "--- Folder matching ---"
+H=$(new_home folders)
+run_home "$H" create lnk "Lnk" lnk@test.com "$H/realdir" --no-ssh-key >/dev/null 2>&1
+ln -s "$H/realdir" "$H/linkdir"
+cd "$H/linkdir"
+output=$(run_home "$H" current)
+assert_contains "current matches through a symlinked cwd" "Profile that would apply here: lnk" "$output"
+cd "$TEST_HOME"
+run_home "$H" create other "Other" other@test.com "$H/otherdir" --no-ssh-key >/dev/null 2>&1
+output=$(run_home "$H" use-folder other "$H/realdir")
+assert_contains "use-folder reports reassignment" "previously assigned" "$output"
 
 # --- Cleanup ---
 echo "--- Cleanup ---"

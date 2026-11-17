@@ -5,6 +5,52 @@ All notable changes to git-persona are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-11-17
+
+### Security
+- Profile IDs are validated to prevent path traversal and shell injection.
+- Profile `.gitconfig` files are written with `git config --file`, so names and emails with quotes, `#`, `;` or backslashes are escaped correctly. Values containing control characters (including newlines) are rejected, which closes a gitconfig injection path.
+- Profile `.conf` files are parsed instead of sourced, so a damaged or tampered file can no longer run code.
+- `core.sshCommand` quotes the key path, so paths with spaces or quotes work.
+- `delete --with-keys` only removes keys that `git-persona` generated, and only under `~/.ssh` with the `id_ed25519_git_` prefix.
+- Directories containing `"`, `\`, `*`, `?` or `[` are rejected for `create` and `use-folder`.
+
+### Fixed
+- `use` clears `core.sshCommand` when switching to a keyless profile.
+- `current` no longer matches the wrong profile when one key path is a prefix of another (for example `work` and `work2`).
+- `--no-ssh-key` no longer picks up a key that already exists at the default path.
+- `~/.gitconfig` edits are written through symlinks, keep file permissions, leave unrelated blank lines alone, and save a backup to `~/.config/git-persona/gitconfig.bak`.
+- A failed `create` removes the partial profile files instead of leaving them behind.
+- `current` matches directories through symlinks, honours `~/` and `gitdir/i:` rules, and lets the last matching `includeIf` win, like git.
+- `create` without `base_dir` works when `~/git-profiles` does not exist yet.
+- `version`, `help`, `list` and `current` no longer create files in `$HOME`.
+- Errors are written to stderr; unknown options are rejected.
+- `use` warns when a profile's SSH key file is missing.
+- `use-folder` reports when it reassigns a folder from another profile.
+- `delete` unlinks the `includeIf` block before removing profile files.
+
+### Changed
+- Required bash lowered to 3.2 in the documentation (exercised by the macOS CI job).
+- `install.sh` downloads to a temp file before replacing the installed script and accepts `GIT_PERSONA_REF` to pin a release.
+- The release workflow runs the tests and checks that the tag matches the script version.
+
+## [1.3.3] - 2026-08-03
+
+### Fixed
+- Profile matching in `current`, and validation in `create`.
+
+## [1.3.2] - 2026-08-03
+
+### Fixed
+- `create` errors if `base_dir`'s parent does not exist instead of silently using a relative path.
+- Relative `base_dir` values are resolved to absolute paths.
+
+## [1.3.1] - 2026-08-02
+
+### Fixed
+- Trailing slash on `base_dir` is stripped so `includeIf` matches.
+- `use-folder` updates the `includeIf` path in place when reassigning a folder.
+
 ## [1.3.0] - 2026-06-21
 
 ### Added

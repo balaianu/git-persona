@@ -2,22 +2,40 @@
 
 # git-persona: manage multiple git identities with SSH keys and includeIf
 # Usage: git-persona <command> [args]
-# Version: 1.3.0
+# Version: 1.4.0
 # License: MIT
-# Dependencies: bash 4.0+, git 2.13+, openssh (ssh-keygen)
+# Dependencies: bash 3.2+, git 2.13+, openssh (ssh-keygen)
 
 set -euo pipefail
 
-VERSION="1.3.0"
+VERSION="1.4.0"
+
+: "${HOME:?HOME is not set}"
 
 CONFIG_DIR="${HOME}/.config/git-persona"
 PROFILES_DIR="${CONFIG_DIR}/profiles"
 SSH_DIR="${HOME}/.ssh"
 GITCONFIG="${HOME}/.gitconfig"
 
-init() {
-    mkdir -p "$PROFILES_DIR"
-    [ -f "$GITCONFIG" ] || touch "$GITCONFIG"
+TMP_FILE=""
+RB_PROFILE=""
+RB_CONF=""
+INCLUDE_REASSIGNED=0
+
+# Profile fields populated by load_conf.
+P_id="" P_name="" P_email="" P_base_dir="" P_key_file="" P_profile_file="" P_key_owned=""
+
+trap '[ -z "$TMP_FILE" ] || rm -f "$TMP_FILE"' EXIT
+
+# ── Output helpers ───────────────────────────────────────────────────────────
+
+err() {
+    printf '%s\n' "$*" >&2
+}
+
+die() {
+    err "$@"
+    exit 1
 }
 
 usage() {
@@ -49,23 +67,49 @@ Examples:
 EOF
 }
 
+# ── Validation ───────────────────────────────────────────────────────────────
+
+init() {
+    mkdir -p "$PROFILES_DIR"
+}
+
 profile_exists() {
     local id="$1"
     [ -f "${PROFILES_DIR}/${id}.conf" ]
 }
 
-# Validate profile ID: alphanumeric, hyphens, underscores only.
-# Rejects path traversal, spaces, and shell metacharacters.
+# Alphanumeric, hyphens, underscores only: the ID becomes part of file paths.
 valid_id() {
     local id="$1"
     [ -n "$id" ] || return 1
     [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]]
 }
 
-# Escape a value for safe embedding inside double quotes in a bash-sourceable
-# conf file. Inside double quotes bash expands $ and ` and \ and ", so all
-# four must be escaped. Backslash first (it escapes the others), then the
-# rest in any order.
+has_control_chars() {
+    [[ "$1" =~ [[:cntrl:]] ]]
+}
+
+# A newline in a value would let it inject extra sections into a gitconfig.
+valid_text() {
+    [ -n "$1" ] && ! has_control_chars "$1"
+}
+
+# The directory ends up inside a gitconfig section header, where quotes and
+# backslashes break parsing and glob characters silently widen the match.
+valid_gitdir() {
+    local dir="$1"
+    [ -n "$dir" ] || return 1
+    has_control_chars "$dir" && return 1
+    case "$dir" in
+        *'"'* | *'\'* | *'*'* | *'?'* | *'['*) return 1 ;;
+    esac
+    return 0
+}
+
+# ── Profile conf files ───────────────────────────────────────────────────────
+
+# Escape a value for embedding inside double quotes in a conf file. Backslash
+# first, because it is the escape character for the other three.
 shell_escape() {
     local s="$1"
     s="${s//\\/\\\\}"
@@ -75,57 +119,190 @@ shell_escape() {
     printf '%s' "$s"
 }
 
-get_field() {
-    local id="$1"
-    local field="$2"
-    local conf="${PROFILES_DIR}/${id}.conf"
-    [ -f "$conf" ] || return 1
-    . "$conf"
-    eval "echo \"\${${field}:-}\""
+unescape_value() {
+    local s="$1"
+    local bs='\' dq='"' ds='$' bt='`' mark=$'\x01'
+    s="${s//"$bs$bs"/$mark}"
+    s="${s//"$bs$ds"/$ds}"
+    s="${s//"$bs$bt"/$bt}"
+    s="${s//"$bs$dq"/$dq}"
+    s="${s//$mark/$bs}"
+    printf '%s' "$s"
 }
 
-# Scan ~/.gitconfig for an [includeIf "gitdir:DIR/"] block whose DIR matches
-# current_dir. Returns the profile_file path from that block, or empty.
-# ~/.gitconfig is the source of truth for which folders map to which profile;
-# the base_dir field in .conf is only set at create time and can go stale.
+# Parse a conf file without sourcing it, so a tampered or corrupt file can
+# never execute code. Conf files stay bash-sourceable for backwards
+# compatibility.
+load_conf() {
+    local conf="$1"
+    local line key val
+    local re='^([a-z_]+)="(.*)"$'
+
+    P_id="" P_name="" P_email="" P_base_dir="" P_key_file="" P_profile_file="" P_key_owned=""
+    [ -f "$conf" ] || return 1
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [[ "$line" =~ $re ]]; then
+            key="${BASH_REMATCH[1]}"
+            val="$(unescape_value "${BASH_REMATCH[2]}")"
+            case "$key" in
+                id) P_id="$val" ;;
+                name) P_name="$val" ;;
+                email) P_email="$val" ;;
+                base_dir) P_base_dir="$val" ;;
+                key_file) P_key_file="$val" ;;
+                profile_file) P_profile_file="$val" ;;
+                key_owned) P_key_owned="$val" ;;
+            esac
+        fi
+    done < "$conf"
+    return 0
+}
+
+load_profile() {
+    load_conf "${PROFILES_DIR}/${1}.conf"
+}
+
+# ── SSH command ──────────────────────────────────────────────────────────────
+
+# core.sshCommand is run through a shell, so the key path must be quoted.
+ssh_command_for() {
+    local q="'"
+    local key="${1//$q/$q\\$q$q}"
+    printf "ssh -i '%s' -o IdentitiesOnly=yes" "$key"
+}
+
+# Versions before 1.4.0 wrote the key path unquoted.
+ssh_command_matches() {
+    local cmd="$1" key="$2"
+    [ "$cmd" = "$(ssh_command_for "$key")" ] ||
+        [ "$cmd" = "ssh -i ${key} -o IdentitiesOnly=yes" ]
+}
+
+write_profile_gitconfig() {
+    local file="$1" name="$2" email="$3" key="$4"
+    rm -f "$file"
+    # git escapes every value correctly, unlike a hand-written heredoc.
+    git config --file "$file" user.name "$name"
+    git config --file "$file" user.email "$email"
+    if [ -n "$key" ]; then
+        git config --file "$file" core.sshCommand "$(ssh_command_for "$key")"
+    fi
+}
+
+# ── ~/.gitconfig editing ─────────────────────────────────────────────────────
+
+# Follow symlinks so edits land in the real file. Dotfile managers commonly
+# symlink ~/.gitconfig, and replacing the link would silently detach it.
+resolve_link() {
+    local p="$1" t i=0
+    while [ -L "$p" ] && [ "$i" -lt 40 ]; do
+        t="$(readlink "$p")"
+        case "$t" in
+            /*) p="$t" ;;
+            *) p="$(dirname "$p")/$t" ;;
+        esac
+        i=$((i + 1))
+    done
+    printf '%s' "$p"
+}
+
+new_tmp_file() {
+    mkdir -p "$CONFIG_DIR"
+    TMP_FILE="$(mktemp "${CONFIG_DIR}/gitconfig.XXXXXX")"
+}
+
+# Copy the rewritten file over the original in place, keeping its symlink,
+# mode and ownership, and keep one backup of the previous content.
+commit_gitconfig() {
+    local target
+    target="$(resolve_link "$GITCONFIG")"
+
+    if [ -f "$target" ] && cmp -s "$TMP_FILE" "$target"; then
+        rm -f "$TMP_FILE"
+        TMP_FILE=""
+        return 0
+    fi
+    if [ -f "$target" ]; then
+        cp -p "$target" "${CONFIG_DIR}/gitconfig.bak"
+    fi
+    cat "$TMP_FILE" > "$target"
+    rm -f "$TMP_FILE"
+    TMP_FILE=""
+}
+
+dir_within() {
+    case "$1" in
+        "$2" | "$2"/*) return 0 ;;
+    esac
+    return 1
+}
+
+lowercase() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+# Scan ~/.gitconfig for [includeIf "gitdir:DIR/"] blocks matching current_dir
+# and print the profile_file of the last match (git applies later includes
+# last, so the last one wins). ~/.gitconfig is the source of truth for which
+# folders map to which profile; base_dir in .conf can go stale.
 match_includefile() {
     local current_dir="$1"
+    local physical_dir="$2"
     [ -f "$GITCONFIG" ] || return 0
 
-    local in_block=0
-    local block_dir=""
-    local line inner trimmed
+    local in_block=0 icase=0
+    local block_dir="" block_phys="" result=""
+    local line inner trimmed profile_file cur phys blk
 
     while IFS= read -r line || [ -n "$line" ]; do
         if [ "$in_block" = 1 ]; then
             trimmed="${line#"${line%%[![:space:]]*}"}"
             if [ "${trimmed:0:6}" = "path =" ]; then
-                local profile_file="${trimmed#path = }"
-                case "$current_dir" in
-                    "$block_dir"|"$block_dir"/*)
-                        printf '%s' "$profile_file"
-                        return 0
-                        ;;
-                esac
+                profile_file="${trimmed#path = }"
+                for cur in "$current_dir" "$physical_dir"; do
+                    for blk in "$block_dir" "$block_phys"; do
+                        [ -n "$blk" ] || continue
+                        if [ "$icase" = 1 ]; then
+                            if dir_within "$(lowercase "$cur")" "$(lowercase "$blk")"; then
+                                result="$profile_file"
+                            fi
+                        elif dir_within "$cur" "$blk"; then
+                            result="$profile_file"
+                        fi
+                    done
+                done
                 in_block=0
             elif [ -z "$line" ] || [ "${line:0:1}" = "[" ]; then
                 in_block=0
+            else
+                continue
             fi
-            continue
+            [ "${line:0:11}" = "[includeIf " ] || continue
         fi
 
         if [ "${line:0:11}" = "[includeIf " ]; then
             inner="${line#[includeIf \"}"
             inner="${inner%\"]}"
+            icase=0
             case "$inner" in
-                gitdir:*)
-                    block_dir="${inner#gitdir:}"
-                    block_dir="${block_dir%/}"
-                    in_block=1
-                    ;;
+                gitdir:*) block_dir="${inner#gitdir:}" ;;
+                gitdir/i:*) block_dir="${inner#gitdir/i:}"; icase=1 ;;
+                *) continue ;;
             esac
+            block_dir="${block_dir%/}"
+            case "$block_dir" in
+                "~/"*) block_dir="${HOME}/${block_dir#\~/}" ;;
+            esac
+            block_phys=""
+            if [ -d "$block_dir" ]; then
+                block_phys="$(cd "$block_dir" && pwd -P)" || block_phys=""
+            fi
+            in_block=1
         fi
     done < "$GITCONFIG"
+
+    printf '%s' "$result"
 }
 
 add_include_if() {
@@ -133,38 +310,32 @@ add_include_if() {
     local profile_file="$2"
     local header="[includeIf \"gitdir:${dir}/\"]"
 
-    # If no gitconfig exists yet, just append.
-    [ -f "$GITCONFIG" ] || {
-        printf "\n[includeIf \"gitdir:%s/\"]\n    path = %s\n" "$dir" "$profile_file" >> "$GITCONFIG"
-        return 0
-    }
+    INCLUDE_REASSIGNED=0
+    new_tmp_file
 
-    # Scan for an existing block with this exact directory header.
-    # - Same path  -> no-op (true dedup).
+    # - Same path      -> no-op (true dedup).
     # - Different path -> update the path line in place (reassignment).
-    # - No match   -> append a new block.
-    local tmp_file="${GITCONFIG}.tmp.$$"
-    local found_header=0
-    local updated=0
+    # - No match       -> append a new block.
+    local src="$GITCONFIG"
+    [ -f "$src" ] || src=/dev/null
+    local found_header=0 updated=0
     local line trimmed
 
     while IFS= read -r line || [ -n "$line" ]; do
         if [ "$found_header" = 1 ]; then
             trimmed="${line#"${line%%[![:space:]]*}"}"
             if [ "$trimmed" = "path = ${profile_file}" ]; then
-                # Exact match — true dedup, copy through unchanged.
                 printf '%s\n' "$line"
                 found_header=0
                 updated=1
                 continue
             elif [ "${trimmed:0:6}" = "path =" ]; then
-                # Header exists but points to a different profile — reassign.
                 printf '    path = %s\n' "$profile_file"
                 found_header=0
                 updated=1
+                INCLUDE_REASSIGNED=1
                 continue
             fi
-            # Not a path line — copy through, keep scanning for the path.
             printf '%s\n' "$line"
             continue
         fi
@@ -173,83 +344,116 @@ add_include_if() {
             found_header=1
         fi
         printf '%s\n' "$line"
-    done < "$GITCONFIG" > "$tmp_file"
+    done < "$src" > "$TMP_FILE"
 
-    if [ "$updated" = 1 ]; then
-        mv "$tmp_file" "$GITCONFIG"
-    else
-        rm -f "$tmp_file"
-        printf "\n[includeIf \"gitdir:%s/\"]\n    path = %s\n" "$dir" "$profile_file" >> "$GITCONFIG"
+    if [ "$updated" = 0 ]; then
+        printf '\n%s\n    path = %s\n' "$header" "$profile_file" >> "$TMP_FILE"
     fi
+
+    commit_gitconfig
 }
 
+_blanks=0
+
+flush_blanks() {
+    while [ "$_blanks" -gt 0 ]; do
+        printf '\n'
+        _blanks=$((_blanks - 1))
+    done
+}
+
+# Remove every [includeIf] block whose path points at profile_file. Everything
+# else in the file, including blank lines, is left untouched.
 remove_include_if() {
     local profile_file="$1"
     [ -f "$GITCONFIG" ] || return 0
 
-    local tmp_file
-    tmp_file="${GITCONFIG}.tmp.$$"
-    local in_block=0
-    local saved_header=""
-    local line
-    local prev_blank=0
+    new_tmp_file
+    local in_block=0 saved_header="" block_buf=""
+    local line trimmed
 
+    _blanks=0
     while IFS= read -r line || [ -n "$line" ]; do
         if [ "$in_block" = 1 ]; then
             if [ -z "$line" ] || [ "${line:0:1}" = "[" ]; then
+                flush_blanks
                 printf '%s\n' "$saved_header"
+                printf '%s' "$block_buf"
                 in_block=0
             else
-                # Strip leading whitespace so any indent (spaces, tabs, or
-                # unusual counts) is accepted, not just the 4-space/tab we write.
-                local trimmed="${line#"${line%%[![:space:]]*}"}"
-                if [ "$trimmed" = "path = ${profile_file}" ]; then
+                trimmed="${line#"${line%%[![:space:]]*}"}"
+                if [ "${trimmed:0:6}" = "path =" ]; then
+                    if [ "$trimmed" = "path = ${profile_file}" ]; then
+                        # Drop the separator blank line that add_include_if
+                        # put in front of the block.
+                        if [ "$_blanks" -gt 0 ]; then
+                            _blanks=$((_blanks - 1))
+                        fi
+                    else
+                        flush_blanks
+                        printf '%s\n' "$saved_header"
+                        printf '%s' "$block_buf"
+                        printf '%s\n' "$line"
+                    fi
                     in_block=0
-                    continue
                 else
-                    printf '%s\n' "$saved_header"
-                    printf '%s\n' "$line"
-                    in_block=0
-                    continue
+                    block_buf="${block_buf}${line}"$'\n'
                 fi
+                continue
             fi
         fi
 
-        # Detect start of an includeIf block
         if [ "${line:0:11}" = "[includeIf " ]; then
             in_block=1
             saved_header="$line"
+            block_buf=""
             continue
         fi
 
-        # Collapse multiple blank lines into one
         if [ -z "$line" ]; then
-            if [ "$prev_blank" = 1 ]; then
-                continue
-            fi
-            prev_blank=1
-        else
-            prev_blank=0
+            _blanks=$((_blanks + 1))
+            continue
         fi
 
+        flush_blanks
         printf '%s\n' "$line"
-    done < "$GITCONFIG" > "$tmp_file"
+    done < "$GITCONFIG" > "$TMP_FILE"
 
     if [ "$in_block" = 1 ]; then
-        printf '%s\n' "$saved_header" >> "$tmp_file"
+        {
+            flush_blanks
+            printf '%s\n' "$saved_header"
+            printf '%s' "$block_buf"
+        } >> "$TMP_FILE"
     fi
+    {
+        flush_blanks
+    } >> "$TMP_FILE"
 
-    mv "$tmp_file" "$GITCONFIG"
+    commit_gitconfig
+}
+
+# ── Commands ─────────────────────────────────────────────────────────────────
+
+rollback_create() {
+    [ -z "$RB_PROFILE" ] || rm -f "$RB_PROFILE"
+    [ -z "$RB_CONF" ] || rm -f "$RB_CONF"
+    err "Profile creation failed; partial profile files were removed."
+    err "Any SSH key that was already generated has been kept."
 }
 
 cmd_create() {
     local generate_key=true
     local positional=()
+    local arg
 
     for arg in "$@"; do
         case "$arg" in
             --no-ssh-key)
                 generate_key=false
+                ;;
+            --*)
+                die "Unknown option: $arg"
                 ;;
             *)
                 positional+=("$arg")
@@ -257,115 +461,137 @@ cmd_create() {
         esac
     done
 
-    if [ "${#positional[@]}" -lt 3 ]; then
-        echo "Usage: git-persona create <id> <name> <email> [base_dir] [--no-ssh-key]"
-        exit 1
+    if [ "${#positional[@]}" -lt 3 ] || [ "${#positional[@]}" -gt 4 ]; then
+        die "Usage: git-persona create <id> <name> <email> [base_dir] [--no-ssh-key]"
     fi
 
     local id="${positional[0]}"
     local name="${positional[1]}"
     local email="${positional[2]}"
-    local base_dir="${positional[3]:-${HOME}/git-profiles/${id}}"
+    local base_dir
 
     if ! valid_id "$id"; then
-        echo "Error: profile ID '$id' is invalid. Use only letters, numbers, hyphens, and underscores." >&2
-        exit 1
+        die "Error: profile ID '$id' is invalid. Use only letters, numbers, hyphens, and underscores."
     fi
+    if ! valid_text "$name"; then
+        die "Error: name is empty or contains control characters."
+    fi
+    if ! valid_text "$email"; then
+        die "Error: email is empty or contains control characters."
+    fi
+
+    if [ "${#positional[@]}" -ge 4 ]; then
+        base_dir="${positional[3]}"
+    else
+        base_dir="${HOME}/git-profiles/${id}"
+        mkdir -p "${HOME}/git-profiles"
+    fi
+
     base_dir="${base_dir%/}"
     # The leaf may not exist yet (mkdir -p below creates it), but the parent
-    # must exist and be a directory. This catches relative paths and typos
-    # without rejecting the common case of creating a new project folder.
+    # must exist. This catches relative paths and typos without rejecting the
+    # common case of creating a new project folder.
     local parent_dir="${base_dir%/*}"
     if [ "$parent_dir" = "$base_dir" ]; then
-        # No slash in base_dir — relative path, reject.
-        echo "Error: base directory '$base_dir' is not an absolute path." >&2
-        exit 1
+        die "Error: base directory '$base_dir' is not an absolute path."
     fi
+    [ -n "$parent_dir" ] || parent_dir="/"
     if [ ! -d "$parent_dir" ]; then
-        echo "Error: parent directory '$parent_dir' does not exist." >&2
-        exit 1
+        die "Error: parent directory '$parent_dir' does not exist."
     fi
-    base_dir="$(cd "$parent_dir" && pwd)/${base_dir##*/}"
-    local key_file="${SSH_DIR}/id_ed25519_git_${id}"
+    parent_dir="$(cd "$parent_dir" && pwd)"
+    base_dir="${parent_dir%/}/${base_dir##*/}"
+    if ! valid_gitdir "$base_dir"; then
+        die "Error: base directory '$base_dir' contains characters that cannot be used in an includeIf rule (quotes, backslashes, * ? [)."
+    fi
+
+    local key_path="${SSH_DIR}/id_ed25519_git_${id}"
+    local key_file=""
+    local key_owned=0
     local profile_file="${PROFILES_DIR}/${id}.gitconfig"
     local conf_file="${PROFILES_DIR}/${id}.conf"
+
+    if [ "$generate_key" = true ]; then
+        key_file="$key_path"
+        # A key that already exists belongs to the user, not to this profile,
+        # so delete --with-keys must never remove it.
+        if [ ! -e "$key_path" ] && [ ! -L "$key_path" ]; then
+            key_owned=1
+        fi
+    fi
 
     init
 
     if profile_exists "$id"; then
-        echo "Profile '$id' already exists."
-        exit 1
+        die "Profile '$id' already exists."
     fi
+
+    RB_PROFILE="$profile_file"
+    RB_CONF="$conf_file"
+    set -E
+    trap rollback_create ERR
+
+    write_profile_gitconfig "$profile_file" "$name" "$email" "$key_file"
+
+    printf '%s\n' \
+        "id=\"${id}\"" \
+        "name=\"$(shell_escape "$name")\"" \
+        "email=\"$(shell_escape "$email")\"" \
+        "base_dir=\"$(shell_escape "$base_dir")\"" \
+        "key_file=\"$(shell_escape "$key_file")\"" \
+        "profile_file=\"$(shell_escape "$profile_file")\"" \
+        "key_owned=\"${key_owned}\"" > "$conf_file"
 
     mkdir -p "$base_dir"
 
-    if [ "$generate_key" = true ]; then
-        if [ ! -f "$key_file" ]; then
+    if [ -n "$key_file" ]; then
+        if [ "$key_owned" = 1 ]; then
+            if [ ! -d "$SSH_DIR" ]; then
+                mkdir -p "$SSH_DIR"
+                chmod 700 "$SSH_DIR"
+            fi
             ssh-keygen -t ed25519 -C "$email" -f "$key_file" -N ""
         else
             echo "SSH key already exists at $key_file"
         fi
     fi
 
-    # Build profile gitconfig — only set sshCommand if key exists
-    if [ -f "$key_file" ]; then
-        cat > "$profile_file" << EOF
-[user]
-    name = ${name}
-    email = ${email}
-[core]
-    sshCommand = ssh -i ${key_file} -o IdentitiesOnly=yes
-EOF
-    else
-        cat > "$profile_file" << EOF
-[user]
-    name = ${name}
-    email = ${email}
-EOF
-    fi
-
-    cat > "$conf_file" << EOF
-id="${id}"
-name="$(shell_escape "$name")"
-email="$(shell_escape "$email")"
-base_dir="$(shell_escape "$base_dir")"
-key_file="$(shell_escape "$key_file")"
-profile_file="$(shell_escape "$profile_file")"
-EOF
-
     add_include_if "$base_dir" "$profile_file"
+
+    trap - ERR
+    set +E
 
     echo "Profile '$id' created."
     echo "  Base directory: $base_dir"
-    if [ -f "$key_file" ]; then
+    if [ -n "$key_file" ]; then
         echo "  SSH key:        $key_file"
         echo "  Public key:     ${key_file}.pub"
-        echo ""
-        echo "Add this public key to GitHub:"
-        cat "${key_file}.pub"
+        if [ -f "${key_file}.pub" ]; then
+            echo ""
+            echo "Add this public key to GitHub:"
+            cat "${key_file}.pub"
+        fi
         echo ""
     else
-        echo "  SSH key:        (none — --no-ssh-key was set or key not found)"
+        echo "  SSH key:        (none — --no-ssh-key was set)"
         echo ""
     fi
     echo "Put repos under $base_dir to automatically use this profile."
 }
 
 cmd_list() {
-    init
     local count=0
-    local conf id name email base_dir key_file
+    local conf
 
     echo "Profiles:"
     for conf in "${PROFILES_DIR}"/*.conf; do
         [ -f "$conf" ] || continue
-        id="" name="" email="" base_dir="" key_file=""
-        . "$conf"
-        echo "  ${id}"
-        echo "    name:     ${name}"
-        echo "    email:    ${email}"
-        echo "    base_dir: ${base_dir}"
-        echo "    key:      ${key_file}"
+        load_conf "$conf"
+        echo "  ${P_id}"
+        echo "    name:     ${P_name}"
+        echo "    email:    ${P_email}"
+        echo "    base_dir: ${P_base_dir}"
+        echo "    key:      ${P_key_file:-(none)}"
         count=$((count + 1))
     done
 
@@ -377,90 +603,100 @@ cmd_list() {
 cmd_delete() {
     local remove_keys=false
     local id=""
+    local arg
 
     for arg in "$@"; do
         case "$arg" in
             --with-keys)
                 remove_keys=true
                 ;;
+            --*)
+                die "Unknown option: $arg"
+                ;;
             *)
-                if [ -z "$id" ]; then
-                    id="$arg"
+                if [ -n "$id" ]; then
+                    die "Usage: git-persona delete <id> [--with-keys]"
                 fi
+                id="$arg"
                 ;;
         esac
     done
 
     if [ -z "$id" ]; then
-        echo "Usage: git-persona delete <id> [--with-keys]"
-        exit 1
+        die "Usage: git-persona delete <id> [--with-keys]"
     fi
 
     if ! valid_id "$id"; then
-        echo "Error: profile ID '$id' is invalid." >&2
-        exit 1
+        die "Error: profile ID '$id' is invalid."
     fi
-
-    init
 
     if ! profile_exists "$id"; then
-        echo "Profile '$id' not found."
-        exit 1
+        die "Profile '$id' not found."
     fi
 
-    local key_file profile_file base_dir
-    key_file=$(get_field "$id" "key_file")
-    profile_file=$(get_field "$id" "profile_file")
-    base_dir=$(get_field "$id" "base_dir")
+    load_profile "$id"
+    local key_file="$P_key_file"
+    local profile_file="$P_profile_file"
+    local base_dir="$P_base_dir"
+    local key_name="${key_file#"${SSH_DIR}"/}"
 
-    if [ "$remove_keys" = true ]; then
+    if [ -z "$key_file" ]; then
+        echo "No SSH key is associated with this profile."
+    elif [ "$remove_keys" != true ]; then
+        echo "SSH key kept: $key_file (use --with-keys to also remove it)"
+    elif [ "$P_key_owned" = "0" ]; then
+        echo "SSH key kept: $key_file (it existed before this profile and was not generated by git-persona)"
+    elif ! [[ "$key_name" =~ ^id_ed25519_git_[A-Za-z0-9_-]+$ ]]; then
+        # A damaged conf must not be able to point rm at an arbitrary file.
+        err "Refusing to remove $key_file: not a git-persona key under $SSH_DIR"
+    else
         rm -f "$key_file" "${key_file}.pub"
         echo "SSH key removed: $key_file"
-    else
-        echo "SSH key kept: $key_file (use --with-keys to also remove it)"
     fi
 
-    rm -f "$profile_file" "${PROFILES_DIR}/${id}.conf"
-    remove_include_if "$profile_file"
+    # Unlink from ~/.gitconfig first so a failure there leaves the profile
+    # intact instead of a dangling includeIf.
+    if [ -n "$profile_file" ]; then
+        remove_include_if "$profile_file"
+    fi
+    case "$profile_file" in
+        "${PROFILES_DIR}"/*) rm -f "$profile_file" ;;
+    esac
+    rm -f "${PROFILES_DIR}/${id}.conf"
 
     echo "Profile '$id' deleted."
     echo "Note: base directory $base_dir was not removed."
 }
 
 cmd_use() {
-    if [ $# -lt 1 ]; then
-        echo "Usage: git-persona use <id>"
-        exit 1
+    if [ $# -ne 1 ]; then
+        die "Usage: git-persona use <id>"
     fi
 
     local id="$1"
-    init
 
     if ! valid_id "$id"; then
-        echo "Error: profile ID '$id' is invalid." >&2
-        exit 1
+        die "Error: profile ID '$id' is invalid."
     fi
 
     if ! profile_exists "$id"; then
-        echo "Profile '$id' not found."
-        exit 1
+        die "Profile '$id' not found."
     fi
 
-    if [ ! -d ".git" ] && ! git rev-parse --git-dir >/dev/null 2>&1; then
-        echo "Not a git repository. Run this from inside a repo."
-        exit 1
+    if ! git rev-parse --git-dir >/dev/null 2>&1; then
+        die "Not a git repository. Run this from inside a repo."
     fi
 
-    local name email key_file
-    name=$(get_field "$id" "name")
-    email=$(get_field "$id" "email")
-    key_file=$(get_field "$id" "key_file")
+    load_profile "$id"
 
-    git config user.name "$name"
-    git config user.email "$email"
-    if [ -n "$key_file" ] && [ -f "$key_file" ]; then
-        git config core.sshCommand "ssh -i ${key_file} -o IdentitiesOnly=yes"
+    git config user.name "$P_name"
+    git config user.email "$P_email"
+    if [ -n "$P_key_file" ] && [ -f "$P_key_file" ]; then
+        git config core.sshCommand "$(ssh_command_for "$P_key_file")"
     else
+        if [ -n "$P_key_file" ]; then
+            err "Warning: SSH key $P_key_file not found; core.sshCommand was not set."
+        fi
         # Clear any previous sshCommand so we don't push with a stale key
         git config --unset core.sshCommand 2>/dev/null || true
     fi
@@ -469,112 +705,106 @@ cmd_use() {
 }
 
 cmd_use_folder() {
-    if [ $# -lt 2 ]; then
-        echo "Usage: git-persona use-folder <id> <folder>"
-        exit 1
+    if [ $# -ne 2 ]; then
+        die "Usage: git-persona use-folder <id> <folder>"
     fi
 
     local id="$1"
     local folder="$2"
-    init
 
     if ! valid_id "$id"; then
-        echo "Error: profile ID '$id' is invalid." >&2
-        exit 1
+        die "Error: profile ID '$id' is invalid."
     fi
 
     if ! profile_exists "$id"; then
-        echo "Profile '$id' not found."
-        exit 1
+        die "Profile '$id' not found."
     fi
 
     if [ ! -d "$folder" ]; then
-        echo "Folder does not exist: $folder"
-        exit 1
+        die "Folder does not exist: $folder"
     fi
 
-    local profile_file
-    profile_file=$(get_field "$id" "profile_file")
+    folder="$(cd "$folder" && pwd)"
+    if ! valid_gitdir "$folder"; then
+        die "Error: folder '$folder' contains characters that cannot be used in an includeIf rule (quotes, backslashes, * ? [)."
+    fi
 
-    folder=$(cd "$folder" && pwd)
+    load_profile "$id"
+    if [ -z "$P_profile_file" ]; then
+        die "Error: profile '$id' has no profile_file; its conf is damaged."
+    fi
 
-    add_include_if "$folder" "$profile_file"
+    add_include_if "$folder" "$P_profile_file"
 
     echo "Profile '$id' applied to folder: $folder"
+    if [ "$INCLUDE_REASSIGNED" = 1 ]; then
+        echo "Note: this folder was previously assigned to a different profile."
+    fi
     echo "Any git repo under this folder will automatically use this profile."
 }
 
+print_current() {
+    local label="$1"
+    echo "${label}: ${P_id}"
+    echo "  name:  ${P_name}"
+    echo "  email: ${P_email}"
+    echo "  key:   ${P_key_file:-(none)}"
+}
+
 cmd_current() {
-    local current_dir
+    local current_dir physical_dir
     current_dir="$(pwd)"
+    physical_dir="$(pwd -P)"
 
-    local git_name git_email ssh_cmd
-    git_name=""
-    git_email=""
-    ssh_cmd=""
+    local git_name="" git_email="" ssh_cmd=""
 
-    if [ -d ".git" ] || git rev-parse --git-dir >/dev/null 2>&1; then
+    if git rev-parse --git-dir >/dev/null 2>&1; then
         git_name="$(git config user.name 2>/dev/null || true)"
         git_email="$(git config user.email 2>/dev/null || true)"
         ssh_cmd="$(git config core.sshCommand 2>/dev/null || true)"
     fi
 
-    local conf id name email base_dir key_file profile_file
+    local conf
 
-    # Pass 1: strongest signal — the SSH key in core.sshCommand uniquely
-    # identifies a profile even when several share the same name+email.
+    # Pass 1: strongest signal. The exact SSH command identifies a profile
+    # even when several share the same name+email, and exact comparison keeps
+    # a key path from matching another key it is a prefix of.
     if [ -n "$ssh_cmd" ]; then
         for conf in "${PROFILES_DIR}"/*.conf; do
             [ -f "$conf" ] || continue
-            id="" name="" email="" base_dir="" key_file="" profile_file=""
-            . "$conf"
-            if [ -n "$key_file" ]; then
-                case "$ssh_cmd" in
-                    *"$key_file"*)
-                        echo "Current profile: $id"
-                        echo "  name:  $name"
-                        echo "  email: $email"
-                        echo "  key:   $key_file"
-                        return 0
-                        ;;
-                esac
-            fi
-        done
-    fi
-
-    # Pass 2: weaker signal — name+email. When multiple profiles share these,
-    # the first match wins (there is no way to distinguish them further).
-    if [ -n "$git_name" ] && [ -n "$git_email" ]; then
-        for conf in "${PROFILES_DIR}"/*.conf; do
-            [ -f "$conf" ] || continue
-            id="" name="" email="" base_dir="" key_file="" profile_file=""
-            . "$conf"
-            if [ "$name" = "$git_name" ] && [ "$email" = "$git_email" ]; then
-                echo "Current profile: $id"
-                echo "  name:  $name"
-                echo "  email: $email"
-                echo "  key:   ${key_file:-}"
+            load_conf "$conf"
+            if [ -n "$P_key_file" ] && ssh_command_matches "$ssh_cmd" "$P_key_file"; then
+                print_current "Current profile"
                 return 0
             fi
         done
     fi
 
-    # Pass 3: no git repo here — match the current directory against
-    # includeIf blocks in ~/.gitconfig (the source of truth for folder→profile
-    # mapping). base_dir in .conf is only set at create time and can go stale
-    # after use-folder adds or reassigns folders.
+    # Pass 2: weaker signal. When multiple profiles share name+email the
+    # first match wins; there is no way to tell them apart.
+    if [ -n "$git_name" ] && [ -n "$git_email" ]; then
+        for conf in "${PROFILES_DIR}"/*.conf; do
+            [ -f "$conf" ] || continue
+            load_conf "$conf"
+            if [ "$P_name" = "$git_name" ] && [ "$P_email" = "$git_email" ]; then
+                print_current "Current profile"
+                return 0
+            fi
+        done
+    fi
+
+    # Pass 3: match the directory against includeIf blocks in ~/.gitconfig.
     local matched_profile_file
-    matched_profile_file="$(match_includefile "$current_dir")"
+    matched_profile_file="$(match_includefile "$current_dir" "$physical_dir")"
     if [ -n "$matched_profile_file" ]; then
         for conf in "${PROFILES_DIR}"/*.conf; do
             [ -f "$conf" ] || continue
-            id="" name="" email="" base_dir="" key_file="" profile_file=""
-            . "$conf"
-            if [ "$profile_file" = "$matched_profile_file" ]; then
-                echo "Profile that would apply here: $id"
-                echo "  name:     $name"
-                echo "  email:    $email"
-                echo "  base_dir: ${base_dir:-}"
+            load_conf "$conf"
+            if [ "$P_profile_file" = "$matched_profile_file" ]; then
+                echo "Profile that would apply here: ${P_id}"
+                echo "  name:     ${P_name}"
+                echo "  email:    ${P_email}"
+                echo "  base_dir: ${P_base_dir}"
                 echo "  (no git repo detected in this directory)"
                 return 0
             fi
@@ -584,8 +814,7 @@ cmd_current() {
     echo "No matching profile found for this location."
 }
 
-# Main
-init
+# ── Main ─────────────────────────────────────────────────────────────────────
 
 case "${1:-}" in
     create)
@@ -610,15 +839,15 @@ case "${1:-}" in
     current)
         cmd_current
         ;;
-    version|--version|-v)
+    version | --version | -v)
         echo "git-persona $VERSION"
         ;;
-    help|--help|-h|"")
+    help | --help | -h | "")
         usage
         ;;
     *)
-        echo "Unknown command: $1"
-        usage
+        err "Unknown command: $1"
+        usage >&2
         exit 1
         ;;
 esac
