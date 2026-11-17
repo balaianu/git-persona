@@ -120,7 +120,7 @@ bash -n "$SCRIPT" && PASS=$((PASS + 1)) && echo "  PASS: bash syntax check" || {
 # --- Version ---
 echo "--- Version ---"
 output=$(run version)
-assert_equals "version output" "git-persona 1.4.2" "$output"
+assert_equals "version output" "git-persona 1.4.3" "$output"
 
 # --- Release metadata ---
 # Fails the PR that bumps VERSION without writing a changelog entry, so the
@@ -776,6 +776,100 @@ assert_contains "'..' leaf rejected" "real folder name" "$output"
 run_home "$H" create first "F" f@test.com "$H/shared" --no-ssh-key >/dev/null 2>&1
 output=$(run_home "$H" create second "S" s@test.com "$H/shared" --no-ssh-key 2>&1)
 assert_contains "create reports folder reassignment" "previously assigned" "$output"
+
+# --- includeIf block editing edge cases ---
+echo "--- includeIf block edge cases ---"
+H=$(new_home blocks)
+run_home "$H" create bl "Bl" bl@test.com "$H/bl" --no-ssh-key >/dev/null 2>&1
+PF="$H/.config/git-persona/profiles/bl.gitconfig"
+
+# Interior blank lines of a removed block must not survive.
+printf '[user]\n    name = X\n\n[includeIf "gitdir:%s/bl/"]\n    path = %s\n\n    # tail\n    k = 1\n\n[alias]\n    co = checkout\n' "$H" "$PF" > "$H/.gitconfig"
+printf '[user]\n    name = X\n\n[alias]\n    co = checkout\n' > "$H/expected"
+run_home "$H" delete bl >/dev/null 2>&1
+if cmp -s "$H/expected" "$H/.gitconfig"; then
+    PASS=$((PASS + 1)); echo "  PASS: blank lines inside a removed block are dropped"
+else
+    FAIL=$((FAIL + 1)); FAILED_TESTS+=("interior blank lines in removed block"); echo "  FAIL: interior blank lines in removed block"
+    diff "$H/expected" "$H/.gitconfig" || true
+fi
+
+# A blank line before path= does not end the section; odd spacing and key case parse.
+run_home "$H" create bl "Bl" bl@test.com "$H/bl" --no-ssh-key >/dev/null 2>&1
+printf '[user]\n    name = X\n\n[includeif "gitdir:%s/bl/"]\n\n  Path=%s\n[alias]\n    co = checkout\n' "$H" "$PF" > "$H/.gitconfig"
+run_home "$H" delete bl >/dev/null 2>&1
+assert_not_contains "blank-separated, oddly spaced path removed" "bl.gitconfig" "$(cat "$H/.gitconfig")"
+assert_contains "neighbouring section survives" "co = checkout" "$(cat "$H/.gitconfig")"
+
+# Two paths in one section: only ours goes.
+run_home "$H" create bl "Bl" bl@test.com "$H/bl" --no-ssh-key >/dev/null 2>&1
+printf '[includeIf "gitdir:%s/bl/"]\n    path = /keep/me.gitconfig\n    path   =   %s\n' "$H" "$PF" > "$H/.gitconfig"
+run_home "$H" delete bl >/dev/null 2>&1
+assert_contains "other path in shared section kept" "/keep/me.gitconfig" "$(cat "$H/.gitconfig")"
+assert_not_contains "our path removed from shared section" "bl.gitconfig" "$(cat "$H/.gitconfig")"
+
+# use-folder dedups against a path written without spaces.
+run_home "$H" create bl2 "Bl2" bl2@test.com "$H/bl2" --no-ssh-key >/dev/null 2>&1
+PF2="$H/.config/git-persona/profiles/bl2.gitconfig"
+printf '[includeIf "gitdir:%s/bl2/"]\npath=%s\n' "$H" "$PF2" > "$H/.gitconfig"
+run_home "$H" use-folder bl2 "$H/bl2" >/dev/null 2>&1
+assert_equals "spacing-tolerant dedup keeps one block" "1" "$(grep -c 'gitdir:' "$H/.gitconfig")"
+cd "$H/bl2"
+output=$(run_home "$H" current)
+assert_contains "current reads path=X without spaces" "Profile that would apply here: bl2" "$output"
+cd "$TEST_HOME"
+
+# --- profile_file in a conf can never point outside the profiles dir ---
+echo "--- profile_file traversal ---"
+H=$(new_home traversal)
+run_home "$H" create tv "Tv" tv@test.com "$H/tv" --no-ssh-key >/dev/null 2>&1
+printf 'PRECIOUS' > "$H/victim"
+printf '%s\n' 'id="tv"' 'name="Tv"' 'email="tv@test.com"' \
+    "profile_file=\"$H/.config/git-persona/profiles/../../../victim\"" \
+    > "$H/.config/git-persona/profiles/tv.conf"
+output=$(run_home "$H" delete tv 2>&1)
+assert_file_exists "traversing profile_file does not delete outside files" "$H/victim"
+assert_contains "unexpected profile_file is reported" "ignoring unexpected profile_file" "$output"
+assert_file_not_exists "real profile gitconfig still removed" "$H/.config/git-persona/profiles/tv.gitconfig"
+
+# --- backup message only when a backup exists ---
+echo "--- Backup message ---"
+H=$(new_home nobackup)
+ln -s "$H/no-such-dir/gitconfig" "$H/.gitconfig"
+output=$(run_home "$H" create nb "Nb" nb@test.com "$H/nb" --no-ssh-key 2>&1 || true)
+assert_contains "failed write is reported" "Failed to write" "$output"
+assert_not_contains "no backup claimed when none was made" "previous content is saved" "$output"
+assert_file_not_exists "failed create rolled back" "$H/.config/git-persona/profiles/nb.conf"
+
+# --- base_dir slash normalisation ---
+echo "--- base_dir slashes ---"
+H=$(new_home slashes)
+output=$(run_home "$H" create sl1 "S" s@test.com "$H/dir//" --no-ssh-key 2>&1)
+assert_contains "trailing double slash normalised" "Base directory: $H/dir" "$output"
+assert_contains "gitdir has a single trailing slash" "gitdir:$H/dir/\"" "$(cat "$H/.gitconfig")"
+output=$(run_home "$H" create sl2 "S" s@test.com "//" --no-ssh-key 2>&1 || true)
+assert_contains "filesystem root rejected" "filesystem root" "$output"
+
+# --- CR-only conf and CRLF gitconfig ---
+echo "--- Line ending handling ---"
+H=$(new_home cr)
+run_home "$H" create co "Co" co@test.com "$H/co" --no-ssh-key >/dev/null 2>&1
+conf="$H/.config/git-persona/profiles/co.conf"
+tr '\n' '\r' < "$conf" > "$conf.tmp" && mv "$conf.tmp" "$conf"
+output=$(run_home "$H" list)
+assert_contains "CR-only conf parses" "email:    co@test.com" "$output"
+
+H=$(new_home crlf-gitconfig)
+printf '[user]\r\n    name = X\r\n' > "$H/.gitconfig"
+cp "$H/.gitconfig" "$H/original"
+output=$(run_home "$H" create cg "Cg" cg@test.com "$H/cg" --no-ssh-key 2>&1 || true)
+assert_contains "CRLF gitconfig refused" "CRLF" "$output"
+assert_file_not_exists "nothing created for CRLF gitconfig" "$H/.config/git-persona/profiles/cg.conf"
+if cmp -s "$H/original" "$H/.gitconfig"; then
+    PASS=$((PASS + 1)); echo "  PASS: CRLF gitconfig left untouched"
+else
+    FAIL=$((FAIL + 1)); FAILED_TESTS+=("CRLF gitconfig untouched"); echo "  FAIL: CRLF gitconfig untouched"
+fi
 
 # --- Cleanup ---
 echo "--- Cleanup ---"

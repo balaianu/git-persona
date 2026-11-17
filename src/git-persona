@@ -2,13 +2,13 @@
 
 # git-persona: manage multiple git identities with SSH keys and includeIf
 # Usage: git-persona <command> [args]
-# Version: 1.4.2
+# Version: 1.4.3
 # License: MIT
 # Dependencies: bash 3.2+, git 2.13+, openssh (ssh-keygen)
 
 set -euo pipefail
 
-VERSION="1.4.2"
+VERSION="1.4.3"
 
 : "${HOME:?HOME is not set}"
 
@@ -132,18 +132,20 @@ unescape_value() {
 
 # Parse a conf file without sourcing it, so a tampered or corrupt file can
 # never execute code. Conf files stay bash-sourceable for backwards
-# compatibility.
+# compatibility. CR is treated as a line break so CRLF and CR-only files parse.
 load_conf() {
     local conf="$1"
-    local line key val
+    local line key val data
     local re='^([a-z_]+)="(.*)"$'
-    local cr=$'\r'
+    local cr=$'\r' nl=$'\n'
 
     P_id="" P_name="" P_email="" P_base_dir="" P_key_file="" P_profile_file="" P_key_owned=""
     [ -f "$conf" ] || return 1
 
+    data="$(cat "$conf")" || return 1
+    data="${data//$cr/$nl}"
+
     while IFS= read -r line || [ -n "$line" ]; do
-        line="${line%"$cr"}"
         if [[ "$line" =~ $re ]]; then
             key="${BASH_REMATCH[1]}"
             val="$(unescape_value "${BASH_REMATCH[2]}")"
@@ -157,17 +159,20 @@ load_conf() {
                 key_owned) P_key_owned="$val" ;;
             esac
         fi
-    done < "$conf"
+    done <<< "$data"
     return 0
 }
 
+# The profile gitconfig path is fully determined by the ID, so the conf value
+# is never trusted: a damaged or tampered conf must neither leave a dangling
+# includeIf behind nor point delete at a file outside the profiles directory.
 load_profile() {
+    local derived="${PROFILES_DIR}/${1}.gitconfig"
     load_conf "${PROFILES_DIR}/${1}.conf" || return 1
-    # The path is fully determined by the ID, so a damaged conf must not
-    # leave a dangling includeIf behind on delete.
-    if [ -z "$P_profile_file" ]; then
-        P_profile_file="${PROFILES_DIR}/${1}.gitconfig"
+    if [ -n "$P_profile_file" ] && [ "$P_profile_file" != "$derived" ]; then
+        err "Warning: ignoring unexpected profile_file in ${1}.conf; using $derived"
     fi
+    P_profile_file="$derived"
 }
 
 # ── SSH command ──────────────────────────────────────────────────────────────
@@ -222,7 +227,7 @@ new_tmp_file() {
 # Copy the rewritten file over the original in place, keeping its symlink,
 # mode and ownership, and keep one backup of the previous content.
 commit_gitconfig() {
-    local target
+    local target made_backup=0
     target="$(resolve_link "$GITCONFIG")"
 
     if [ -f "$target" ] && cmp -s "$TMP_FILE" "$target"; then
@@ -232,13 +237,29 @@ commit_gitconfig() {
     fi
     if [ -f "$target" ]; then
         cp -p "$target" "${CONFIG_DIR}/gitconfig.bak"
+        made_backup=1
     fi
     if ! cat "$TMP_FILE" > "$target"; then
-        err "Failed to write $target. The previous content is saved in ${CONFIG_DIR}/gitconfig.bak"
+        if [ "$made_backup" = 1 ]; then
+            err "Failed to write $target. The previous content is saved in ${CONFIG_DIR}/gitconfig.bak"
+        else
+            err "Failed to write $target."
+        fi
         return 1
     fi
     rm -f "$TMP_FILE"
     TMP_FILE=""
+}
+
+# The editors below match whole lines, so CRLF would make them miss existing
+# blocks and mix line endings. Refuse instead of guessing.
+require_lf_gitconfig() {
+    local cr=$'\r' target
+    target="$(resolve_link "$GITCONFIG")"
+    [ -f "$target" ] || return 0
+    if grep -q "$cr" "$target"; then
+        die "Error: $GITCONFIG contains carriage returns (CRLF line endings). Convert it to LF, for example with dos2unix, and run the command again."
+    fi
 }
 
 dir_within() {
@@ -252,6 +273,25 @@ lowercase() {
     printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
 }
 
+# Git accepts any spacing around "=" and any case for key names.
+parse_path_line() {
+    local re='^[[:space:]]*[Pp][Aa][Tt][Hh][[:space:]]*=[[:space:]]*(.*)$'
+    [[ "$1" =~ $re ]] || return 1
+    PATH_VALUE="${BASH_REMATCH[1]}"
+    PATH_VALUE="${PATH_VALUE%"${PATH_VALUE##*[![:space:]]}"}"
+    return 0
+}
+
+is_section_start() {
+    local t="${1#"${1%%[![:space:]]*}"}"
+    [ "${t:0:1}" = "[" ]
+}
+
+is_includeif_header() {
+    local re='^[[:space:]]*\[[iI]nclude[iI]f[[:space:]]+"'
+    [[ "$1" =~ $re ]]
+}
+
 # Scan ~/.gitconfig for [includeIf "gitdir:DIR/"] blocks matching current_dir
 # and print the profile_file of the last match (git applies later includes
 # last, so the last one wins). ~/.gitconfig is the source of truth for which
@@ -263,37 +303,16 @@ match_includefile() {
 
     local in_block=0 icase=0
     local block_dir="" block_phys="" result=""
-    local line inner trimmed profile_file cur phys blk
+    local line inner cur blk
+    local cr=$'\r'
 
     while IFS= read -r line || [ -n "$line" ]; do
-        if [ "$in_block" = 1 ]; then
-            trimmed="${line#"${line%%[![:space:]]*}"}"
-            if [ "${trimmed:0:6}" = "path =" ]; then
-                profile_file="${trimmed#path = }"
-                for cur in "$current_dir" "$physical_dir"; do
-                    for blk in "$block_dir" "$block_phys"; do
-                        [ -n "$blk" ] || continue
-                        if [ "$icase" = 1 ]; then
-                            if dir_within "$(lowercase "$cur")" "$(lowercase "$blk")"; then
-                                result="$profile_file"
-                            fi
-                        elif dir_within "$cur" "$blk"; then
-                            result="$profile_file"
-                        fi
-                    done
-                done
-                in_block=0
-            elif [ -z "$line" ] || [ "${line:0:1}" = "[" ]; then
-                in_block=0
-            else
-                continue
-            fi
-            [ "${line:0:11}" = "[includeIf " ] || continue
-        fi
+        line="${line%"$cr"}"
 
-        if [ "${line:0:11}" = "[includeIf " ]; then
-            inner="${line#[includeIf \"}"
-            inner="${inner%\"]}"
+        if is_includeif_header "$line"; then
+            in_block=0
+            inner="${line#*\"}"
+            inner="${inner%\"*}"
             icase=0
             case "$inner" in
                 gitdir:*) block_dir="${inner#gitdir:}" ;;
@@ -309,6 +328,27 @@ match_includefile() {
                 block_phys="$(cd "$block_dir" && pwd -P)" || block_phys=""
             fi
             in_block=1
+            continue
+        fi
+
+        if is_section_start "$line"; then
+            in_block=0
+            continue
+        fi
+
+        if [ "$in_block" = 1 ] && parse_path_line "$line"; then
+            for cur in "$current_dir" "$physical_dir"; do
+                for blk in "$block_dir" "$block_phys"; do
+                    [ -n "$blk" ] || continue
+                    if [ "$icase" = 1 ]; then
+                        if dir_within "$(lowercase "$cur")" "$(lowercase "$blk")"; then
+                            result="$PATH_VALUE"
+                        fi
+                    elif dir_within "$cur" "$blk"; then
+                        result="$PATH_VALUE"
+                    fi
+                done
+            done
         fi
     done < "$GITCONFIG"
 
@@ -329,34 +369,33 @@ add_include_if() {
     local src="$GITCONFIG"
     [ -f "$src" ] || src=/dev/null
     local found_header=0 updated=0
-    local line trimmed
+    local line t
 
     while IFS= read -r line || [ -n "$line" ]; do
         if [ "$found_header" = 1 ]; then
-            trimmed="${line#"${line%%[![:space:]]*}"}"
-            if [ "${trimmed:0:1}" = "[" ]; then
+            if is_section_start "$line"; then
                 # The matching header had no path line; a path further down
                 # belongs to another section and must not be touched.
                 found_header=0
-            elif [ "$trimmed" = "path = ${profile_file}" ]; then
-                printf '%s\n' "$line"
+            elif parse_path_line "$line"; then
                 found_header=0
                 updated=1
+                if [ "$PATH_VALUE" = "$profile_file" ]; then
+                    printf '%s\n' "$line"
+                else
+                    printf '    path = %s\n' "$profile_file"
+                    INCLUDE_REASSIGNED=1
+                fi
                 continue
-            elif [ "${trimmed:0:6}" = "path =" ]; then
-                printf '    path = %s\n' "$profile_file"
-                found_header=0
-                updated=1
-                INCLUDE_REASSIGNED=1
-                continue
-            fi
-            if [ "$found_header" = 1 ]; then
+            else
                 printf '%s\n' "$line"
                 continue
             fi
         fi
 
-        if [ "$line" = "$header" ]; then
+        t="${line#"${line%%[![:space:]]*}"}"
+        t="${t%"${t##*[![:space:]]}"}"
+        if [ "$t" = "$header" ]; then
             found_header=1
         fi
         printf '%s\n' "$line"
@@ -378,6 +417,51 @@ flush_blanks() {
     done
 }
 
+# Write out (or drop) the buffered includeIf block. A block is dropped when
+# its only path is profile_file; a block that also has other paths just loses
+# our line. Blank lines at the end of a dropped block are the separator before
+# the next section and are kept.
+finish_block() {
+    local profile_file="$1"
+    local nl=$'\n'
+    local line kept="" body probe
+    local ours=0 others=0 tb=0
+
+    if [ -n "$block_buf" ]; then
+        body="${block_buf%"$nl"}"
+        while IFS= read -r line || [ -n "$line" ]; do
+            if parse_path_line "$line"; then
+                if [ "$PATH_VALUE" = "$profile_file" ]; then
+                    ours=1
+                    continue
+                fi
+                others=1
+            fi
+            kept="${kept}${line}${nl}"
+        done <<< "$body"
+    fi
+
+    if [ "$ours" = 1 ] && [ "$others" = 0 ]; then
+        # Drop the separator blank line add_include_if put in front of it.
+        if [ "$_blanks" -gt 0 ]; then
+            _blanks=$((_blanks - 1))
+        fi
+        probe="$kept"
+        while [ "${probe%"$nl$nl"}" != "$probe" ]; do
+            probe="${probe%"$nl"}"
+            tb=$((tb + 1))
+        done
+        if [ "$probe" = "$nl" ]; then
+            tb=$((tb + 1))
+        fi
+        _blanks=$((_blanks + tb))
+    else
+        flush_blanks
+        printf '%s\n' "$saved_header"
+        printf '%s' "$kept"
+    fi
+}
+
 # Remove every [includeIf] block whose path points at profile_file. Everything
 # else in the file, including blank lines, is left untouched.
 remove_include_if() {
@@ -385,52 +469,24 @@ remove_include_if() {
     [ -f "$GITCONFIG" ] || return 0
 
     new_tmp_file
-    local in_block=0 skipping=0 saved_header="" block_buf=""
-    local line trimmed
+    local in_block=0 saved_header="" block_buf=""
+    local line nl=$'\n'
 
     _blanks=0
     while IFS= read -r line || [ -n "$line" ]; do
-        if [ "$skipping" = 1 ]; then
-            # Remaining keys and comments of a removed block belong to it.
-            trimmed="${line#"${line%%[![:space:]]*}"}"
-            if [ "${trimmed:0:1}" = "[" ]; then
-                skipping=0
-            elif [ -n "$line" ]; then
-                continue
-            fi
-        fi
-
         if [ "$in_block" = 1 ]; then
-            if [ -z "$line" ] || [ "${line:0:1}" = "[" ]; then
-                flush_blanks
-                printf '%s\n' "$saved_header"
-                printf '%s' "$block_buf"
+            if is_section_start "$line"; then
+                finish_block "$profile_file"
                 in_block=0
             else
-                trimmed="${line#"${line%%[![:space:]]*}"}"
-                if [ "${trimmed:0:6}" = "path =" ]; then
-                    if [ "$trimmed" = "path = ${profile_file}" ]; then
-                        # Drop the separator blank line that add_include_if
-                        # put in front of the block.
-                        if [ "$_blanks" -gt 0 ]; then
-                            _blanks=$((_blanks - 1))
-                        fi
-                        skipping=1
-                    else
-                        flush_blanks
-                        printf '%s\n' "$saved_header"
-                        printf '%s' "$block_buf"
-                        printf '%s\n' "$line"
-                    fi
-                    in_block=0
-                else
-                    block_buf="${block_buf}${line}"$'\n'
-                fi
+                # A blank line does not end a section in git, so keep
+                # collecting until the next header.
+                block_buf="${block_buf}${line}${nl}"
                 continue
             fi
         fi
 
-        if [ "${line:0:11}" = "[includeIf " ]; then
+        if is_includeif_header "$line"; then
             in_block=1
             saved_header="$line"
             block_buf=""
@@ -446,14 +502,10 @@ remove_include_if() {
         printf '%s\n' "$line"
     done < "$GITCONFIG" > "$TMP_FILE"
 
-    if [ "$in_block" = 1 ]; then
-        {
-            flush_blanks
-            printf '%s\n' "$saved_header"
-            printf '%s' "$block_buf"
-        } >> "$TMP_FILE"
-    fi
     {
+        if [ "$in_block" = 1 ]; then
+            finish_block "$profile_file"
+        fi
         flush_blanks
     } >> "$TMP_FILE"
 
@@ -514,7 +566,13 @@ cmd_create() {
         mkdir -p "${HOME}/git-profiles"
     fi
 
-    base_dir="${base_dir%/}"
+    local orig_base_dir="$base_dir"
+    while [ "${base_dir%/}" != "$base_dir" ]; do
+        base_dir="${base_dir%/}"
+    done
+    if [ -z "$base_dir" ]; then
+        die "Error: base directory '$orig_base_dir' is empty or the filesystem root."
+    fi
     # The leaf may not exist yet (mkdir -p below creates it), but the parent
     # must exist. This catches relative paths and typos without rejecting the
     # common case of creating a new project folder.
@@ -534,6 +592,8 @@ cmd_create() {
     if ! valid_gitdir "$base_dir"; then
         die "Error: base directory '$base_dir' contains characters that cannot be used in an includeIf rule (quotes, backslashes, * ? [)."
     fi
+
+    require_lf_gitconfig
 
     local key_path="${SSH_DIR}/id_ed25519_git_${id}"
     local key_file=""
@@ -619,7 +679,7 @@ cmd_list() {
     echo "Profiles:"
     for conf in "${PROFILES_DIR}"/*.conf; do
         [ -f "$conf" ] || continue
-        load_conf "$conf"
+        load_conf "$conf" || continue
         echo "  ${P_id}"
         echo "    name:     ${P_name}"
         echo "    email:    ${P_email}"
@@ -667,7 +727,9 @@ cmd_delete() {
         die "Profile '$id' not found."
     fi
 
-    load_profile "$id"
+    require_lf_gitconfig
+
+    load_profile "$id" || die "Error: profile '$id' could not be read."
     local key_file="$P_key_file"
     local profile_file="$P_profile_file"
     local base_dir="$P_base_dir"
@@ -722,7 +784,7 @@ cmd_use() {
         die "Not a git repository. Run this from inside a repo."
     fi
 
-    load_profile "$id"
+    load_profile "$id" || die "Error: profile '$id' could not be read."
 
     git config user.name "$P_name"
     git config user.email "$P_email"
@@ -764,10 +826,8 @@ cmd_use_folder() {
         die "Error: folder '$folder' contains characters that cannot be used in an includeIf rule (quotes, backslashes, * ? [)."
     fi
 
-    load_profile "$id"
-    if [ -z "$P_profile_file" ]; then
-        die "Error: profile '$id' has no profile_file; its conf is damaged."
-    fi
+    require_lf_gitconfig
+    load_profile "$id" || die "Error: profile '$id' could not be read."
 
     add_include_if "$folder" "$P_profile_file"
 
@@ -808,7 +868,7 @@ cmd_current() {
     if [ -n "$ssh_cmd" ]; then
         for conf in "${PROFILES_DIR}"/*.conf; do
             [ -f "$conf" ] || continue
-            load_conf "$conf"
+            load_conf "$conf" || continue
             if [ -n "$P_key_file" ] && ssh_command_matches "$ssh_cmd" "$P_key_file"; then
                 print_current "Current profile"
                 return 0
@@ -821,7 +881,7 @@ cmd_current() {
     if [ -n "$git_name" ] && [ -n "$git_email" ]; then
         for conf in "${PROFILES_DIR}"/*.conf; do
             [ -f "$conf" ] || continue
-            load_conf "$conf"
+            load_conf "$conf" || continue
             if [ "$P_name" = "$git_name" ] && [ "$P_email" = "$git_email" ]; then
                 print_current "Current profile"
                 return 0
@@ -835,7 +895,7 @@ cmd_current() {
     if [ -n "$matched_profile_file" ]; then
         for conf in "${PROFILES_DIR}"/*.conf; do
             [ -f "$conf" ] || continue
-            load_conf "$conf"
+            load_conf "$conf" || continue
             if [ "$P_profile_file" = "$matched_profile_file" ]; then
                 echo "Profile that would apply here: ${P_id}"
                 echo "  name:     ${P_name}"

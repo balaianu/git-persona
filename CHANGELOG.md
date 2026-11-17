@@ -5,6 +5,24 @@ All notable changes to git-persona are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.3] - 2026-11-17
+
+### Security
+- The profile gitconfig path is always derived from the profile ID. A `profile_file` in a conf that points elsewhere (for example with `..`) is ignored with a warning, so `delete` can no longer be steered at files outside the profiles directory.
+
+### Fixed
+- Removing an `includeIf` block drops blank lines inside it, and a blank line no longer ends the block, so a `path` after a blank line is found. A section with several paths only loses ours.
+- `path=X`, `path  =  X` and any key casing are understood when adding, removing and matching `includeIf` blocks; `[includeif ...]` headers are recognised case-insensitively.
+- `create` normalises trailing and doubled slashes in the base directory and rejects the filesystem root.
+- A conf that cannot be read now produces an error message instead of a silent exit.
+- Confs with CR-only line endings parse.
+- A `~/.gitconfig` with CRLF line endings is refused with a clear message instead of being edited into a mixed-ending file. Nothing is created or deleted in that case.
+- The write-failure message only mentions the backup when one was made.
+- `current` ignores CR in `~/.gitconfig` and treats blank lines inside a section as part of it.
+
+### Changed
+- CI workflow declares read-only `contents` permission.
+
 ## [1.4.2] - 2026-11-17
 
 ### Fixed
