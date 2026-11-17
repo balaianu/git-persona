@@ -120,7 +120,7 @@ bash -n "$SCRIPT" && PASS=$((PASS + 1)) && echo "  PASS: bash syntax check" || {
 # --- Version ---
 echo "--- Version ---"
 output=$(run version)
-assert_equals "version output" "git-persona 1.4.1" "$output"
+assert_equals "version output" "git-persona 1.4.2" "$output"
 
 # --- Release metadata ---
 # Fails the PR that bumps VERSION without writing a changelog entry, so the
@@ -762,7 +762,9 @@ echo "--- CRLF conf ---"
 H=$(new_home crlf)
 run_home "$H" create cr "Cr" cr@test.com "$H/cr" --no-ssh-key >/dev/null 2>&1
 conf="$H/.config/git-persona/profiles/cr.conf"
-sed 's/$/\r/' "$conf" > "$conf.tmp" && mv "$conf.tmp" "$conf"
+cr=$'\r'
+while IFS= read -r l || [ -n "$l" ]; do printf '%s%s\n' "$l" "$cr"; done < "$conf" > "$conf.tmp"
+mv "$conf.tmp" "$conf"
 run_home "$H" delete cr >/dev/null 2>&1
 assert_not_contains "CRLF conf delete removes includeIf" "cr.gitconfig" "$(cat "$H/.gitconfig")"
 

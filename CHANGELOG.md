@@ -5,6 +5,14 @@ All notable changes to git-persona are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.2] - 2026-11-17
+
+### Fixed
+- CRLF stripping in conf parsing no longer relies on `$'\r'` inside a quoted expansion, which older bash (macOS 3.2) does not interpret.
+
+### Changed
+- CI also runs the test suite on Alpine Linux.
+
 ## [1.4.1] - 2026-11-17
 
 ### Security

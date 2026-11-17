@@ -21,3 +21,18 @@ jobs:
 
       - name: Verify syntax
         run: bash -n src/git-persona && bash -n install.sh
+
+  # Runs in docker from the Ubuntu runner instead of using a job container,
+  # so JavaScript actions like checkout never need to run on musl.
+  alpine:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run test suite on Alpine
+        run: |
+          docker run --rm -v "$PWD:/src:ro" alpine:3 sh -c '
+            apk add --no-cache bash git openssh-keygen &&
+            bash /src/tests/test_basic.sh
+          '

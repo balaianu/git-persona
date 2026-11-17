@@ -2,13 +2,13 @@
 
 # git-persona: manage multiple git identities with SSH keys and includeIf
 # Usage: git-persona <command> [args]
-# Version: 1.4.1
+# Version: 1.4.2
 # License: MIT
 # Dependencies: bash 3.2+, git 2.13+, openssh (ssh-keygen)
 
 set -euo pipefail
 
-VERSION="1.4.1"
+VERSION="1.4.2"
 
 : "${HOME:?HOME is not set}"
 
@@ -137,12 +137,13 @@ load_conf() {
     local conf="$1"
     local line key val
     local re='^([a-z_]+)="(.*)"$'
+    local cr=$'\r'
 
     P_id="" P_name="" P_email="" P_base_dir="" P_key_file="" P_profile_file="" P_key_owned=""
     [ -f "$conf" ] || return 1
 
     while IFS= read -r line || [ -n "$line" ]; do
-        line="${line%$'\r'}"
+        line="${line%"$cr"}"
         if [[ "$line" =~ $re ]]; then
             key="${BASH_REMATCH[1]}"
             val="$(unescape_value "${BASH_REMATCH[2]}")"
