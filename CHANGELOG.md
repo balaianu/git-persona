@@ -5,6 +5,11 @@ All notable changes to git-persona are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-11-27
+
+### Added
+- `skill` command prints an agent-facing manual: the rules an AI agent must follow when working in a git-persona environment (never set identity manually, verify before committing, surface misconfiguration rather than patch it), a command reference, and diagnostics. The manual is embedded in the script, so every install self-documents at exactly the version installed.
+
 ## [1.4.8] - 2026-11-17
 
 ### Fixed

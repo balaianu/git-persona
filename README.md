@@ -242,6 +242,14 @@ Current profile: work
   key:   /home/user/.ssh/id_ed25519_git_work
 ```
 
+### Print the agent manual
+
+```bash
+git persona skill
+```
+
+Prints a manual written for AI agents: the rules an agent must follow when working in a git-persona environment, the command surface, and diagnostics. The manual is embedded in the script itself, so every install self-documents at exactly the version installed — point your agent at `git persona skill` and it gets ground truth for the version you run.
+
 ### Delete a profile
 
 ```bash

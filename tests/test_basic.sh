@@ -120,7 +120,7 @@ bash -n "$SCRIPT" && PASS=$((PASS + 1)) && echo "  PASS: bash syntax check" || {
 # --- Version ---
 echo "--- Version ---"
 output=$(run version)
-assert_equals "version output" "git-persona 1.4.8" "$output"
+assert_equals "version output" "git-persona 1.5.0" "$output"
 
 # --- Release metadata ---
 # Fails the PR that bumps VERSION without writing a changelog entry, so the
@@ -142,6 +142,20 @@ assert_contains "help shows use" "use" "$output"
 assert_contains "help shows current" "current" "$output"
 assert_contains "help shows --no-ssh-key" "--no-ssh-key" "$output"
 assert_contains "help shows --with-keys" "--with-keys" "$output"
+assert_contains "help shows skill" "skill" "$output"
+
+# --- Skill manual ---
+echo "--- Skill manual ---"
+output=$(run skill)
+assert_contains "skill prints the manual header" "git-persona — agent manual" "$output"
+assert_contains "skill covers the rules" "Never set git identity manually" "$output"
+assert_contains "skill covers commands" "use-folder" "$output"
+assert_contains "skill covers diagnostics" "Diagnostics" "$output"
+# the manual is full of backticked shell fragments inside a quoted heredoc —
+# they must survive verbatim, not execute (a silent execution would drop or
+# substitute the text)
+assert_contains "backticked content stays literal" 'git var GIT_AUTHOR_IDENT' "$output"
+assert_contains "no expansion artifacts" 'core.sshCommand' "$output"
 
 # --- Create profile (with SSH key, default) ---
 echo "--- Create (default, with SSH key) ---"

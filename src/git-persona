@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-VERSION="1.4.8"
+VERSION="1.5.0"
 
 : "${HOME:?HOME is not set}"
 
@@ -57,6 +57,7 @@ Commands:
   use <id>                              Apply profile to current repo
   use-folder <id> <folder>              Apply profile to a folder via includeIf
   current                               Show the profile for the current directory
+  skill                                 Print the agent manual (for AI agents)
   version                               Show the version of git-persona
 
 Flags:
@@ -1153,6 +1154,96 @@ cmd_current() {
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
+cmd_skill() {
+    cat << 'SKILL_EOF'
+# git-persona — agent manual
+
+git-persona automates git commit identity — name, email, SSH key — by
+repository location, using git's includeIf. Repositories under a profile's
+base directory automatically commit as that profile.
+
+You are an agent operating in a user's environment. The rules below exist
+because authorship mistakes are among the least reversible damage you can
+do with git: they write permanent facts into history, and fixing them
+means rewriting it.
+
+## Rules
+
+1. Never set git identity manually. No `git config user.name` or
+   `user.email` at any scope, no `-c user.name=...` commit flags, no
+   GIT_AUTHOR_* / GIT_COMMITTER_* environment variables. Identity derives
+   from repository location; manual overrides defeat the mechanism and
+   create exactly the misattribution this tool exists to prevent.
+
+2. Before committing in an unfamiliar repository, verify:
+     git persona current        — which profile applies here, with details
+     git var GIT_AUTHOR_IDENT   — the identity a commit would actually carry
+   In a healthy setup they agree.
+
+3. A missing or wrong resolved identity is a symptom, not something to
+   patch. It means the repository is outside every profile's base
+   directory, or covered by the wrong one. Report it and stop. The correct
+   fixes — relocating the repository, `use-folder`, or `use` — encode which
+   identity the user wants, so they are the user's decision, not yours.
+
+4. If no identity resolves at all (`git var GIT_AUTHOR_IDENT` fails), do
+   not invent one. A commit with fabricated authorship is worse than no
+   commit.
+
+5. Never rewrite history to fix authorship unless the user explicitly asks
+   for that specific operation. It is destructive, and unnecessary going
+   forward once wiring is correct.
+
+6. SSH operations (clone, push, fetch) use the profile's key automatically
+   via `core.sshCommand`. If one fails with an authentication error, report
+   which profile and key were involved. Registering keys with hosting
+   providers is the user's action, never yours.
+
+## Commands
+
+git-persona installs as a git subcommand: `git persona <verb>` and
+`git-persona <verb>` are identical.
+
+  list                                all profiles: name, email, base dir, key
+  current                             profile applying to the current directory
+  use <id>                            pin the current repository to a profile
+                                      (writes repo-local config; outranks
+                                      folder wiring)
+  use-folder <id> <dir>               cover an additional folder with a profile
+  create <id> <name> <email> [base_dir] [--no-ssh-key]
+                                      new profile: SSH key, config, includeIf
+                                      wiring; prints the public key to register
+  delete <id> [--with-keys]           remove a profile; keys are kept unless
+                                      --with-keys
+  version                             version
+  help                                usage summary
+
+`create`, `delete`, `use` and `use-folder` mutate the user's identity
+infrastructure. Never run them unless the user explicitly asked.
+
+## How resolution works
+
+- Each profile is a config file at `~/.config/git-persona/profiles/<id>.gitconfig`
+  holding `user.name`, `user.email` and usually `core.sshCommand`.
+- `~/.gitconfig` carries one `includeIf "gitdir:<base_dir>/"` block per
+  covered folder, pointing at the profile config.
+- `git persona use` writes the same values into one repository's local
+  config, which outranks folder wiring.
+- `git config --show-origin user.email` names the exact file a value came
+  from — the fastest diagnosis when identity surprises you.
+
+## Diagnostics
+
+| Observation | Meaning | Correct response |
+|---|---|---|
+| `current` reports no profile | repo is outside every base directory | report; user decides between relocating, use-folder, or use |
+| wrong profile active | repo sits under the wrong base directory | report; do not override |
+| `git var GIT_AUTHOR_IDENT` fails | no coverage and no fallback identity | stop; never invent an identity |
+| old commits carry wrong authors | predates the wiring | cosmetic history; rewriting only on explicit instruction |
+| push fails with auth error | profile key not registered with the host | report the key fingerprint; registering keys is the user's action |
+SKILL_EOF
+}
+
 main() {
     case "${1:-}" in
         create)
@@ -1176,6 +1267,9 @@ main() {
             ;;
         current)
             cmd_current
+            ;;
+        skill)
+            cmd_skill
             ;;
         version | --version | -v)
             echo "git-persona $VERSION"

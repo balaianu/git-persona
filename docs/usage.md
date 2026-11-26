@@ -132,6 +132,14 @@ Show usage information.
 git persona help
 ```
 
+### `skill`
+
+Print the agent manual — rules, command reference, and diagnostics for AI agents operating in a git-persona environment. Embedded in the script; always matches the installed version.
+
+```bash
+git persona skill
+```
+
 ## Typical workflow
 
 1. Create profiles for each identity:
